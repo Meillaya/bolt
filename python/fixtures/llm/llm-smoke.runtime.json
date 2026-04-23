@@ -1,0 +1,4 @@
+{
+  "tokenizer_file": "llm-smoke.tokenizer.json",
+  "weights_file": "llm-smoke.weights.bin"
+}

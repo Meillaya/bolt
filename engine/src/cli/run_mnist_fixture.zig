@@ -1,0 +1,35 @@
+const std = @import("std");
+const common = @import("common.zig");
+const fixtures = @import("bolt").fixtures;
+const proof_runs = @import("bolt").runtime.proof_runs;
+
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(allocator);
+    const manifest_path = try common.expectSinglePathArg(
+        allocator,
+        args,
+        "usage: run_mnist_fixture <manifest-path>",
+    );
+
+    var context = try common.loadManifestContext(
+        init.io,
+        allocator,
+        manifest_path,
+        fixtures.Family.mnist,
+    );
+    defer context.manifest.deinit();
+
+    const output = try proof_runs.mnistOutput(
+        init.io,
+        allocator,
+        context,
+    );
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    try stdout.writeAll(output);
+    try stdout.flush();
+}

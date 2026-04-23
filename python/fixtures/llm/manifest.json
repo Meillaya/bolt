@@ -1,0 +1,9 @@
+{
+  "fixture_version": 1,
+  "family": "llm",
+  "fixture_name": "llm-smoke",
+  "payload_file": "llm-smoke.json",
+  "expected_file": "llm-smoke.expected.json",
+  "runtime_bundle_file": "llm-smoke.runtime.json",
+  "description": "Deterministic smoke fixture for the small decoder-only path."
+}

@@ -1,0 +1,6 @@
+.DS_Store
+.omc/
+reference/
+artifacts/**
+!artifacts/**/
+!artifacts/**/.gitkeep

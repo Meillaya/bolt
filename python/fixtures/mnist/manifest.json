@@ -1,0 +1,9 @@
+{
+  "fixture_version": 1,
+  "family": "mnist",
+  "fixture_name": "mnist-smoke",
+  "payload_file": "mnist-smoke.json",
+  "expected_file": "mnist-smoke.expected.json",
+  "runtime_bundle_file": null,
+  "description": "Deterministic smoke fixture for the compact non-LLM path."
+}

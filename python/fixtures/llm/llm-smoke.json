@@ -1,0 +1,18 @@
+{
+  "family": "llm",
+  "fixture_name": "llm-smoke",
+  "prompt_text": "zig metal bolt",
+  "token_ids": [
+    1,
+    2,
+    3
+  ],
+  "logits": [
+    0.1,
+    0.2,
+    0.9,
+    0.4
+  ],
+  "expected_prompt_sum": 6,
+  "expected_top_token": 2
+}

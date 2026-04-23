@@ -1,0 +1,10 @@
+{
+  "family": "mnist",
+  "fixture_name": "mnist-smoke",
+  "rows": 28,
+  "cols": 28,
+  "element_count": 784,
+  "pixel_sum": 7,
+  "non_zero_count": 3,
+  "predicted_label": 7
+}
