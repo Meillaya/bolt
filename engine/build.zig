@@ -10,8 +10,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    mod.addCSourceFile(.{
+        .file = b.path("src/metal/bridge.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
     mod.linkFramework("Metal", .{});
     mod.linkFramework("Foundation", .{});
+    mod.linkSystemLibrary("objc", .{});
     mod.link_libc = true;
 
     const fixture_inspect = b.addExecutable(.{

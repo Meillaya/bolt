@@ -2,6 +2,7 @@ pub const context = @import("metal/context.zig");
 pub const fixtures = @import("fixtures/manifest.zig");
 pub const payload_identity = @import("fixtures/payload_identity.zig");
 pub const layout = @import("tensor/layout.zig");
+pub const buffer = @import("tensor/buffer.zig");
 pub const mnist = @import("models/mnist.zig");
 pub const decoder = @import("models/decoder.zig");
 pub const tokenizer = @import("tokenizer.zig");

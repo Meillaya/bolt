@@ -4,7 +4,7 @@ macOS-first Zig + Metal engine workbench with Python reference validation.
 
 ## Current status
 
-This repo is past the initial bootstrap/proof milestones and is currently in a cleanup/hardening pass around the deterministic v1 proof surface before Phase 4 researcher-harness work.
+This repo is now past the initial bootstrap/proof milestones and has landed its first real Metal vertical slice on top of the deterministic v1 proof surface.
 
 The approved v1 direction is:
 - one shared native runtime
@@ -12,6 +12,14 @@ The approved v1 direction is:
 - one compact non-LLM path
 - Python goldens/reference checks before benchmark work
 - current milestone state: shared runtime + compact MNIST proof + small decoder-only LLM proof are implemented and green
+- current native slice state:
+  - committed Metal shader source in `engine/src/metal/kernels.metal`
+  - Objective-C Metal bridge in `engine/src/metal/bridge.m`
+  - Zig Metal runtime wrapper in `engine/src/metal/context.zig`
+  - tensor buffer abstraction in `engine/src/tensor/buffer.zig`
+  - Phase 1 shared-buffer runtime foundation is now landed: Metal-backed tensors keep CPU-visible shared storage and only materialize host-owned copies on demand
+  - MNIST proof path round-trips tensor data through Metal before summary/trace
+  - decoder proof path now uses a Metal-backed logits-plus-bias vector add for the conditioned route
 
 ## Toolchain
 
@@ -115,3 +123,16 @@ research/         deterministic local run/check/compare/bench scripts
 docs/             architecture and development notes
 reference/        local source/reference project
 ```
+
+## Current first Metal vertical slice
+
+The repo now contains real committed Metal code rather than only toolchain checks:
+
+- `engine/src/metal/kernels.metal` — `copy_f32` and `add_f32`
+- `engine/src/metal/bridge.m` — Objective-C bridge that compiles the embedded MSL source and dispatches compute kernels
+- `engine/src/metal/context.zig` — Zig wrapper for context init, shared-buffer allocation, explicit materialization, and vector add
+- `engine/src/tensor/buffer.zig` — owned tensor/buffer abstraction used by the proof paths
+
+The current Phase 1 substrate change is that Metal-backed tensors now keep their values in CPU-visible shared Metal buffers instead of forcing a fresh host output allocation for every dispatch. Host copies still exist, but only when a caller explicitly materializes one for compatibility or artifact reporting.
+
+This is still a deliberately small slice: it proves shader compilation, shared-buffer allocation, dispatch, MNIST integration, and the first decoder-side Metal operation without changing golden outputs.

@@ -30,6 +30,8 @@ cd engine
 zig build
 ```
 
+That build now also compiles the Objective-C Metal bridge used by the first real compute kernels.
+
 ### 3. Current proof commands
 
 These now provide the current deterministic proof/check/debug workflow:
@@ -70,6 +72,19 @@ cd ..
 ./engine/zig-out/bin/proof_fixture run ./python/fixtures/llm/manifest.json
 ./engine/zig-out/bin/proof_fixture check ./python/fixtures/llm/manifest.json
 ```
+
+The current native proof implementation now includes:
+
+- `engine/src/tensor/buffer.zig` for owned tensor storage plus explicit host materialization from shared Metal buffers
+- `engine/src/metal/kernels.metal` for committed Metal kernels
+- `engine/src/metal/bridge.m` for Metal device/library/pipeline dispatch and shared-buffer allocation
+- `engine/src/metal/context.zig` for Zig-side runtime access and shared-buffer lifecycle
+
+Current wiring:
+
+- Metal-backed tensors now keep CPU-visible shared buffer storage and only materialize a host-owned copy on demand
+- the MNIST proof path round-trips tensor data through the `copy_f32` Metal kernel before summary and trace logic
+- the decoder proof path uses the `add_f32` Metal kernel for the conditioned logits-plus-bias route before selecting the top conditioned token
 
 Compare expected vs native summary:
 

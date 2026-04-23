@@ -1,5 +1,7 @@
 const std = @import("std");
+const buffer = @import("../tensor/buffer.zig");
 const layout = @import("../tensor/layout.zig");
+const metal = @import("../metal/context.zig");
 const mnist_samples = @import("../testing/mnist_samples.zig");
 
 pub const fixture_family = "mnist";
@@ -85,6 +87,12 @@ pub fn loadFixturePayloadFromFile(
 pub fn summarizeFixture(
     payload: MnistFixturePayload,
 ) !MnistFixtureSummary {
+    return summarizeFixtureWithMetal(payload);
+}
+
+pub fn summarizeFixtureWithMetal(
+    payload: MnistFixturePayload,
+) !MnistFixtureSummary {
     const model = MnistModel{};
     const element_count = payload.image_shape.elementCount();
     if (!std.mem.eql(u8, payload.family, fixture_family)) {
@@ -100,9 +108,16 @@ pub fn summarizeFixture(
         return error.UnexpectedInputSize;
     }
 
+    var materialized_pixels = try materializePixels(
+        std.heap.page_allocator,
+        payload.image_shape,
+        payload.pixels,
+    );
+    defer materialized_pixels.deinit();
+
     var sum: f32 = 0;
     var non_zero_count: usize = 0;
-    for (payload.pixels) |pixel| {
+    for (materialized_pixels.values) |pixel| {
         sum += pixel;
         if (pixel != 0) {
             non_zero_count += 1;
@@ -184,16 +199,23 @@ pub fn traceFixture(
     allocator: std.mem.Allocator,
     payload: MnistFixturePayload,
 ) !MnistFixtureTrace {
-    const summary = try summarizeFixture(payload);
+    const summary = try summarizeFixtureWithMetal(payload);
+
+    var materialized_pixels = try materializePixels(
+        allocator,
+        payload.image_shape,
+        payload.pixels,
+    );
+    defer materialized_pixels.deinit();
 
     const non_zero_pixels = try allocator.alloc(MnistNonZeroPixel, summary.non_zero_count);
     errdefer allocator.free(non_zero_pixels);
 
     var top_pixel_index: usize = 0;
-    var top_pixel_value: f32 = payload.pixels[0];
+    var top_pixel_value: f32 = materialized_pixels.values[0];
     var non_zero_index: usize = 0;
 
-    for (payload.pixels, 0..) |pixel, index| {
+    for (materialized_pixels.values, 0..) |pixel, index| {
         if (pixel > top_pixel_value) {
             top_pixel_value = pixel;
             top_pixel_index = index;
@@ -231,6 +253,28 @@ pub fn freeTrace(
     trace: *MnistFixtureTrace,
 ) void {
     allocator.free(trace.non_zero_pixels);
+}
+
+fn materializePixels(
+    allocator: std.mem.Allocator,
+    shape: layout.Shape,
+    pixels: []const f32,
+) !buffer.OwnedTensorF32 {
+    var host_tensor = try buffer.OwnedTensorF32.initCopy(
+        allocator,
+        shape,
+        pixels,
+        .host,
+    );
+    errdefer host_tensor.deinit();
+
+    if (!metal.Context.isAvailable()) {
+        return host_tensor;
+    }
+
+    const metal_tensor = try host_tensor.roundTripThroughMetal();
+    host_tensor.deinit();
+    return metal_tensor;
 }
 
 fn parseSamplePayload(allocator: std.mem.Allocator) !std.json.Parsed(MnistFixturePayload) {
@@ -295,4 +339,17 @@ test "trace mnist fixture payload" {
     defer freeTrace(allocator, &trace);
 
     try expectSampleTrace(trace);
+}
+
+test "mnist summary stays deterministic through the Metal-backed tensor round-trip" {
+    const allocator = std.testing.allocator;
+
+    var parsed = try parseSamplePayload(allocator);
+    defer parsed.deinit();
+
+    const summary = try summarizeFixtureWithMetal(parsed.value);
+    const expected = mnist_samples.summary();
+
+    try std.testing.expectEqual(expected.pixel_sum, summary.pixel_sum);
+    try std.testing.expectEqual(expected.predicted_label, summary.predicted_label);
 }

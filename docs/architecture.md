@@ -17,8 +17,11 @@ engine/
   src/
     root.zig
     metal/
+      bridge.m
       context.zig
+      kernels.metal
     tensor/
+      buffer.zig
       layout.zig
     models/
       mnist.zig
@@ -34,6 +37,29 @@ docs/
 ## Shared-core rule
 
 The MNIST-class path and the small decoder-only LLM path must sit on top of the same runtime primitives rather than becoming separate demos.
+
+## Current Metal execution slice
+
+The repo now has a real, intentionally small Metal execution path:
+
+- `tensor/buffer.zig` owns proof-tensor storage and explicit host materialization from shared Metal buffers
+- `metal/context.zig` owns the Zig-side Metal runtime wrapper and shared-buffer lifecycle
+- `metal/bridge.m` owns Objective-C framework interop
+- `metal/kernels.metal` owns the committed compute kernels
+
+Current committed kernels:
+
+- `copy_f32` — used to round-trip MNIST tensor data through Metal before CPU-side proof summarization
+- `add_f32` — used to start the decoder-side Metal path by computing conditioned logits plus one transition-bias row
+
+This is deliberately not a full graph runtime yet. It is the first vertical slice that proves:
+
+1. committed shader source
+2. runtime shader compilation
+3. Metal device + command queue setup
+4. CPU-visible shared-buffer allocation plus explicit materialization-on-demand
+5. one MNIST Metal-backed op first
+6. one initial LLM-side Metal-backed op after MNIST parity stayed green
 
 ## Proof-surface rule
 

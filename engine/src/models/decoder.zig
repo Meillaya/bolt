@@ -1,4 +1,5 @@
 const std = @import("std");
+const metal = @import("../metal/context.zig");
 const tokenizer = @import("../tokenizer.zig");
 const weights = @import("../weights.zig");
 const llm_samples = @import("../testing/llm_samples.zig");
@@ -252,7 +253,11 @@ pub fn summarizeFixtureWithRuntime(
     const prompt_tail_token_id = payload.token_ids[payload.token_ids.len - 1];
     const prompt_tail_token_text = try token_decoder.decodeToken(prompt_tail_token_id);
     const next_token_text = try token_decoder.decodeToken(next_token_id);
-    const conditioned_top = try projection.conditionedTopToken(payload.logits, prompt_tail_token_id);
+    const conditioned_top = try conditionedTopTokenWithOptionalMetal(
+        payload.logits,
+        prompt_tail_token_id,
+        projection,
+    );
     const conditioned_next_token_id = conditioned_top.token_id;
     const conditioned_next_token_text = try token_decoder.decodeToken(conditioned_next_token_id);
     const model_top = try projection.modelTopToken(prompt_tail_token_id);
@@ -392,6 +397,45 @@ pub fn summarizeFixtureWithRuntime(
 
     try validateSummaryConsistency(summary);
     return summary;
+}
+
+fn conditionedTopTokenWithOptionalMetal(
+    logits: []const f32,
+    source_token_id: usize,
+    projection: weights.FixtureDecoderWeights,
+) !weights.TokenScore {
+    if (!metal.Context.isAvailable()) {
+        return projection.conditionedTopToken(logits, source_token_id);
+    }
+
+    var context = metal.Context.init() catch {
+        return projection.conditionedTopToken(logits, source_token_id);
+    };
+    defer context.deinit();
+
+    const vocab_size = projection.vocabSize();
+    const row_start = source_token_id * vocab_size;
+    const row_end = row_start + vocab_size;
+    const bias_row = projection.transition_bias[row_start..row_end];
+
+    const conditioned_scores = try std.heap.page_allocator.alloc(f32, vocab_size);
+    defer std.heap.page_allocator.free(conditioned_scores);
+
+    try context.addF32(logits, bias_row, conditioned_scores);
+
+    var token_id: usize = 0;
+    var best_score = conditioned_scores[0];
+    for (conditioned_scores[1..], 1..) |score, index| {
+        if (score > best_score) {
+            best_score = score;
+            token_id = index;
+        }
+    }
+
+    return .{
+        .token_id = token_id,
+        .score_milli = @as(usize, @intFromFloat((best_score * 1000.0) + 0.5)),
+    };
 }
 
 pub fn validateSummaryConsistency(summary: DecoderFixtureSummary) !void {
@@ -906,4 +950,15 @@ test "decode fixture produces deterministic rollout" {
     defer freeDecode(allocator, &decode);
 
     try expectSampleDecode(decode);
+}
+
+test "conditioned route remains deterministic when Metal backs the logits-plus-bias step" {
+    const conditioned = try conditionedTopTokenWithOptionalMetal(
+        &.{ 0.1, 0.2, 0.9, 0.4 },
+        llm_samples.bolt_token_id,
+        weights.defaultWeights(),
+    );
+
+    try std.testing.expectEqual(@as(usize, llm_samples.zig_token_id), conditioned.token_id);
+    try std.testing.expectEqual(@as(usize, llm_samples.conditioned_score_milli), conditioned.score_milli);
 }
