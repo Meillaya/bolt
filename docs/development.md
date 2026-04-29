@@ -124,6 +124,33 @@ diff -u artifacts/bench/<older>/summary.json artifacts/bench/<newer>/summary.jso
 
 Treat changed correctness gates as regressions. Treat changed `elapsed_ns` values as hardware/load-sensitive observations unless a later phase adds explicit threshold policy.
 
+### 4a. Replayable local experiment recipe
+
+Run the default local-only experiment recipe:
+
+```bash
+./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
+```
+
+The default recipe runs compare, benchmark, and proof gates using an allowlisted command set. It writes:
+
+```text
+artifacts/experiments/<timestamp>-smoke-local/recipe.json
+artifacts/experiments/<timestamp>-smoke-local/report.json
+artifacts/experiments/<timestamp>-smoke-local/report.md
+artifacts/experiments/<timestamp>-smoke-local/*stdout.txt
+artifacts/experiments/<timestamp>-smoke-local/*stderr.txt
+artifacts/experiments/latest/...
+```
+
+`report.json` is the replay surface. Check:
+- `control_flow_fingerprint` — stable for unchanged recipe command/evaluation flow
+- `commands_executed` — command arrays, exit codes, stdout/stderr files, and parsed artifact paths
+- `evaluation.evidence_paths` — consumed benchmark manifest, benchmark summary, kernel report, and model inference artifacts
+- `evaluation.benchmark_correctness_gates` — the benchmark gates carried into the experiment result
+
+Recipes are v1 local-only: they must set `local_only=true` and `external_services_allowed=false`, and the runner rejects non-allowlisted commands instead of invoking a shell.
+
 ### 5. LLM runtime bundle layout
 
 The LLM proof path now resolves assets through one bundle file:

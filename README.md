@@ -47,6 +47,7 @@ docs/architecture.md
 ./research/scripts/run_bench.sh
 ./research/scripts/run_proof.sh
 ./research/scripts/run_debug.sh
+./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
 cd engine && zig build
 ./engine/zig-out/bin/proof_fixture run python/fixtures/mnist/manifest.json
 ./engine/zig-out/bin/proof_fixture check python/fixtures/mnist/manifest.json
@@ -125,9 +126,29 @@ It now also includes a structured `route_comparison` object that groups:
 engine/           Zig + Metal native core
 python/           reference scripts and golden-fixture tooling
 research/         deterministic local run/check/compare/bench scripts
+research/recipes/ replayable local-only experiment recipes
 docs/             architecture and development notes
 reference/        local source/reference project
 ```
+
+## Local experiment loop
+
+The v1 automation surface is intentionally offline/local. A recipe is a versioned JSON file with an allowlisted command list and evaluation requirements:
+
+```bash
+./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
+```
+
+The smoke recipe runs compare, benchmark, and proof gates, then writes:
+
+```text
+artifacts/experiments/<timestamp>-smoke-local/recipe.json
+artifacts/experiments/<timestamp>-smoke-local/report.json
+artifacts/experiments/<timestamp>-smoke-local/report.md
+artifacts/experiments/latest/...
+```
+
+`report.json` includes the commands executed, exit codes, captured artifact paths, benchmark correctness gates consumed from `artifacts/bench/latest/summary.json`, and a stable control-flow fingerprint for replay comparison. Recipes cannot call arbitrary shell commands; v1 only allows local repo scripts and does not permit external services.
 
 ## Current first Metal vertical slice
 

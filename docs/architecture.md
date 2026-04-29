@@ -190,6 +190,22 @@ Native inspection surfaces now split into:
 
 This is still a fixture-scoped contract, not a production model format. It is intentionally a stepping stone toward a more realistic imported asset story.
 
+## Local experiment loop
+
+The v1 lab automation surface is deliberately bounded and local-only. It consumes the existing proof/compare/benchmark gates instead of introducing a separate evaluator:
+
+```bash
+./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
+```
+
+Recipe constraints:
+- `schema_version: 1`
+- `local_only: true`
+- `external_services_allowed: false`
+- command arrays must start with an allowlisted local script such as `run_compare.sh`, `run_bench.sh`, or `run_proof.sh`
+
+Each run copies the recipe, captures per-command stdout/stderr, and writes `report.json` plus `report.md` under `artifacts/experiments/<timestamp>-<recipe>/`. The report records command exit codes, artifact paths parsed from command output, benchmark correctness gates from `artifacts/bench/latest/summary.json`, and a stable control-flow fingerprint that can be compared across replays. This loop cannot mutate core code paths by itself; autonomous mutation remains out of v1 scope.
+
 ## Adding the next model family
 
 The next family should extend the existing proof shape rather than fork it:

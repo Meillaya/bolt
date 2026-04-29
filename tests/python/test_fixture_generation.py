@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_script_module(name: str, relative_path: str):
+    spec = importlib.util.spec_from_file_location(name, ROOT / relative_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_fixture_generation() -> None:
@@ -207,7 +217,47 @@ def test_benchmark_artifact_validator() -> None:
         assert "Kernel elapsed_ns values" in summary["performance_observations"]["note"]
 
 
+def test_experiment_recipe_contract() -> None:
+    runner = load_script_module("run_experiment_recipe", "python/scripts/run_experiment_recipe.py")
+    recipe_path = ROOT / "research/recipes/smoke-local.json"
+    recipe = runner.load_recipe(recipe_path)
+
+    assert recipe["schema_version"] == 1
+    assert recipe["local_only"] is True
+    assert recipe["external_services_allowed"] is False
+    assert [step["command"][0] for step in recipe["commands"]] == [
+        "./research/scripts/run_compare.sh",
+        "./research/scripts/run_bench.sh",
+        "./research/scripts/run_proof.sh",
+    ]
+
+    first_fingerprint = runner.stable_recipe_fingerprint(recipe)
+    second_fingerprint = runner.stable_recipe_fingerprint(dict(recipe))
+    assert first_fingerprint == second_fingerprint
+
+    with tempfile.TemporaryDirectory() as tmp:
+        invalid_recipe = Path(tmp) / "networked.json"
+        invalid_recipe.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "name": "networked",
+                    "local_only": False,
+                    "external_services_allowed": True,
+                    "commands": [{"name": "bad", "command": ["curl", "https://example.com"]}],
+                }
+            )
+        )
+        try:
+            runner.load_recipe(invalid_recipe)
+        except SystemExit as exc:
+            assert "local_only=true" in str(exc)
+        else:
+            raise AssertionError("networked experiment recipe unexpectedly passed validation")
+
+
 if __name__ == "__main__":
     test_fixture_generation()
     test_benchmark_artifact_validator()
+    test_experiment_recipe_contract()
     print("python-fixture-test: PASS")
