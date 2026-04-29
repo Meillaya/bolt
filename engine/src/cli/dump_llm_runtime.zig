@@ -51,6 +51,13 @@ pub fn main(init: std.process.Init) !void {
     try stdout.writeAll("{\n");
     try stdout.print("  \"family\": \"{s}\",\n", .{context.family.label()});
     try stdout.print("  \"fixture_name\": \"{s}\",\n", .{context.manifest.value.fixture_name});
+    try stdout.print("  \"loader\": \"{s}\",\n", .{runtime_assets.assets.model.loader});
+    try stdout.print("  \"model_name\": \"{s}\",\n", .{runtime_assets.assets.model.model_name});
+    try stdout.print("  \"model_architecture\": \"{s}\",\n", .{runtime_assets.assets.model.architecture});
+    try stdout.print("  \"model_vocab_size\": {d},\n", .{runtime_assets.assets.model.vocab_size});
+    try stdout.print("  \"model_hidden_size\": {d},\n", .{runtime_assets.assets.model.hidden_size});
+    try stdout.print("  \"model_context_length\": {d},\n", .{runtime_assets.assets.model.context_length});
+    try stdout.print("  \"weights_format\": \"{s}\",\n", .{runtime_assets.assets.weights_format});
     try stdout.writeAll("  \"tokenizer_vocab\": [");
     for (runtime_assets.assets.tokenizer.vocab, 0..) |token, index| {
         if (index != 0) try stdout.writeAll(", ");

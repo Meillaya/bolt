@@ -6,6 +6,7 @@ pub const family_name = "mnist";
 pub const fixture_name = "mnist-smoke";
 pub const payload_file_name = "mnist-smoke.json";
 pub const expected_file_name = "mnist-smoke.expected.json";
+pub const runtime_bundle_file_name = "mnist-smoke.runtime.json";
 pub const description = "Deterministic smoke fixture for the compact non-LLM path.";
 pub const predicted_label = 7;
 pub const sample_payload_non_zero_count = 1;
@@ -31,12 +32,22 @@ pub fn summary() mnist.MnistFixtureSummary {
     return .{
         .family = family_name,
         .fixture_name = fixture_name,
+        .backend = "metal",
+        .dispatched_kernels = .{
+            .matmul_f32 = true,
+            .bias_add_f32 = true,
+            .softmax_f32 = true,
+        },
         .rows = sample_rows,
         .cols = sample_cols,
         .element_count = sample_element_count,
         .pixel_sum = sample_payload_pixel_sum,
         .non_zero_count = sample_summary_non_zero_count,
         .predicted_label = predicted_label,
+        .logits_milli = .{ 0, 100, 200, 300, 400, 500, 600, 2800, 800, 900 },
+        .probabilities_milli = .{ 33, 36, 40, 44, 48, 54, 59, 534, 72, 80 },
+        .top_logit_milli = 2800,
+        .top_probability_milli = 534,
     };
 }
 
@@ -47,6 +58,7 @@ pub fn manifest() fixtures.FixtureManifest {
         .fixture_name = fixture_name,
         .payload_file = payload_file_name,
         .expected_file = expected_file_name,
+        .runtime_bundle_file = runtime_bundle_file_name,
         .description = description,
     };
 }

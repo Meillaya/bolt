@@ -11,15 +11,16 @@ The approved v1 direction is:
 - one small decoder-only LLM path
 - one compact non-LLM path
 - Python goldens/reference checks before benchmark work
-- current milestone state: shared runtime + compact MNIST proof + small decoder-only LLM proof are implemented and green
+- current milestone state: shared runtime + Phase 2 primitive kernels + real MNIST GPU inference + small decoder-only LLM proof are implemented and green
 - current native slice state:
   - committed Metal shader source in `engine/src/metal/kernels.metal`
   - Objective-C Metal bridge in `engine/src/metal/bridge.m`
   - Zig Metal runtime wrapper in `engine/src/metal/context.zig`
   - tensor buffer abstraction in `engine/src/tensor/buffer.zig`
   - Phase 1 shared-buffer runtime foundation is now landed: Metal-backed tensors keep CPU-visible shared storage and only materialize host-owned copies on demand
-  - MNIST proof path round-trips tensor data through Metal before summary/trace
-  - decoder proof path now uses a Metal-backed logits-plus-bias vector add for the conditioned route
+  - Phase 2 primitive baseline is now landed: matrix multiply, bias add, ReLU, reduce-sum, and softmax kernels have correctness tests and benchmark artifacts
+  - Phase 3 MNIST inference now uses a runtime bundle plus Metal `matmul_f32` → `bias_add_f32` → `softmax_f32`
+  - decoder proof path now loads explicit model metadata and uses Metal-backed `bias_add_f32` + `softmax_f32` for the conditioned route
 
 ## Toolchain
 
@@ -43,6 +44,7 @@ docs/architecture.md
 ./research/scripts/run_check.sh
 ./research/scripts/run_smoke.sh
 ./research/scripts/run_compare.sh
+./research/scripts/run_bench.sh
 ./research/scripts/run_proof.sh
 ./research/scripts/run_debug.sh
 cd engine && zig build
@@ -59,12 +61,15 @@ cd engine && zig build
 The decoder proof path currently uses:
 
 ```text
-manifest.json -> runtime bundle JSON -> tokenizer JSON + weights BIN
+manifest.json -> runtime bundle JSON -> model JSON + tokenizer JSON + weights BIN
 ```
 
 The current `weights.bin` is a tiny little-endian float32 bundle with:
 - output projection values
 - prompt-tail-conditioned transition bias values
+
+The current model JSON is deliberately tiny metadata (`loader`, `model_name`, `architecture`, vocab/hidden/context sizes) so native LLM runs can report which runtime bundle was loaded. `run_llm_fixture`, `trace_llm_fixture`, and `proof_fixture run` now report backend, loader/model metadata, weights format, dispatched decoder kernels, and the conditioned-route probability.
+Deferred formats such as safetensors are intentionally rejected in v1 with deterministic `UnsupportedWeightsFormat` evidence rather than silent compatibility stubs.
 
 Inspect the resolved contract with:
 
@@ -129,10 +134,21 @@ reference/        local source/reference project
 The repo now contains real committed Metal code rather than only toolchain checks:
 
 - `engine/src/metal/kernels.metal` — `copy_f32` and `add_f32`
+- `engine/src/metal/kernels.metal` — `copy_f32`, `add_f32`, `matmul_f32`, `bias_add_f32`, `relu_f32`, `reduce_sum_f32`, and `softmax_f32`
 - `engine/src/metal/bridge.m` — Objective-C bridge that compiles the embedded MSL source and dispatches compute kernels
-- `engine/src/metal/context.zig` — Zig wrapper for context init, shared-buffer allocation, explicit materialization, and vector add
+- `engine/src/metal/context.zig` — Zig wrapper for context init, shared-buffer allocation, explicit materialization, vector ops, and primitive NN kernels
 - `engine/src/tensor/buffer.zig` — owned tensor/buffer abstraction used by the proof paths
 
 The current Phase 1 substrate change is that Metal-backed tensors now keep their values in CPU-visible shared Metal buffers instead of forcing a fresh host output allocation for every dispatch. Host copies still exist, but only when a caller explicitly materializes one for compatibility or artifact reporting.
 
-This is still a deliberately small slice: it proves shader compilation, shared-buffer allocation, dispatch, MNIST integration, and the first decoder-side Metal operation without changing golden outputs.
+The current Phase 2 addition keeps that substrate small but broadens the kernel surface enough for the next real-model phases. The Phase 3 MNIST path now consumes that surface through a deterministic dense-classifier runtime bundle:
+
+```text
+python/fixtures/mnist/manifest.json
+  -> mnist-smoke.runtime.json
+       -> mnist-smoke.weights.bin
+```
+
+`run_mnist_fixture` now reports `backend`, dispatched kernel evidence, logits in milli-units, probability milli-units, and the predicted label. `./research/scripts/run_bench.sh` emits timestamped primitive benchmark reports plus an MNIST inference artifact under `artifacts/bench/` after compare/reference checks pass.
+
+This is still a deliberately small slice: it proves shader compilation, shared-buffer allocation, dispatch, real MNIST GPU inference, the first decoder-side Metal operation, and a reusable primitive-kernel baseline without breaking golden checks.

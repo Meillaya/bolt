@@ -32,8 +32,14 @@ pub fn main(init: std.process.Init) !void {
         );
         defer runtime_assets.deinit(allocator);
 
+        std.debug.print("model_file={s}\n", .{runtime_assets.bundle.value.model_file});
         std.debug.print("tokenizer_file={s}\n", .{runtime_assets.bundle.value.tokenizer_file});
         std.debug.print("weights_file={s}\n", .{runtime_assets.bundle.value.weights_file});
+        std.debug.print("loader={s}\n", .{runtime_assets.assets.model.loader});
+        std.debug.print("model_name={s}\n", .{runtime_assets.assets.model.model_name});
+        std.debug.print("architecture={s}\n", .{runtime_assets.assets.model.architecture});
+        std.debug.print("model_context_length={d}\n", .{runtime_assets.assets.model.context_length});
+        std.debug.print("weights_format={s}\n", .{runtime_assets.assets.weights_format});
         std.debug.print("tokenizer_vocab_size={d}\n", .{runtime_assets.assets.tokenizer.vocabSize()});
         std.debug.print("weights_vocab_size={d}\n", .{runtime_assets.assets.weights.vocabSize()});
         std.debug.print("transition_bias_value_count={d}\n", .{runtime_assets.assets.weights.transition_bias.len});

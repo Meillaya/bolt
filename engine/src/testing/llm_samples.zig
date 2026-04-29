@@ -10,7 +10,15 @@ pub const fixture_name = "llm-smoke";
 pub const payload_file_name = "llm-smoke.json";
 pub const expected_file_name = "llm-smoke.expected.json";
 pub const runtime_bundle_file_name = "llm-smoke.runtime.json";
+pub const model_file_name = "llm-smoke.model.json";
 pub const description = "Deterministic smoke fixture for the small decoder-only path.";
+pub const backend_name = "metal";
+pub const loader_name = llm_assets.sample_loader_name;
+pub const model_name = llm_assets.sample_model_name;
+pub const model_architecture = llm_assets.sample_architecture_name;
+pub const model_vocab_size = 4;
+pub const model_context_length = 8;
+pub const weights_format = "binary-f32-le";
 pub const raw_route_name = "raw";
 pub const conditioned_route_name = "conditioned";
 pub const model_route_name = "model";
@@ -33,6 +41,7 @@ pub const preferred_projection_milli = 1500;
 pub const preferred_context_bias_milli = 900;
 pub const model_score_milli = 2300;
 pub const conditioned_score_milli = 1000;
+pub const conditioned_probability_milli = 343;
 pub const raw_score_milli = 900;
 pub const conditioned_to_model_gain_milli = 1300;
 pub const prompt_context_over_conditioned_gain_milli = 1400;
@@ -52,6 +61,17 @@ pub fn summary() decoder.DecoderFixtureSummary {
     return .{
         .family = family_name,
         .fixture_name = fixture_name,
+        .backend = backend_name,
+        .loader = loader_name,
+        .model_name = model_name,
+        .model_architecture = model_architecture,
+        .model_vocab_size = model_vocab_size,
+        .model_context_length = model_context_length,
+        .weights_format = weights_format,
+        .dispatched_kernels = .{
+            .bias_add_f32 = true,
+            .softmax_f32 = true,
+        },
         .prompt_token_count = prompt_token_count,
         .prompt_sum = prompt_token_sum,
         .logits_count = tokenizer.defaultTokenizer().vocab.len,
@@ -85,6 +105,7 @@ pub fn summary() decoder.DecoderFixtureSummary {
         .prompt_condition_bias_milli = conditioning_bias_milli,
         .prompt_context_bias_milli = preferred_context_bias_milli,
         .conditioned_next_score_milli = conditioned_score_milli,
+        .conditioned_next_probability_milli = conditioned_probability_milli,
         .model_next_score_milli = model_score_milli,
         .prompt_context_next_score_milli = preferred_score_milli,
         .model_condition_gap_milli = conditioned_to_model_gain_milli,
@@ -121,6 +142,10 @@ pub fn runtimeAssets(allocator: std.mem.Allocator) !llm_assets.LoadedLlmRuntimeA
         allocator,
         llm_assets.sample_bundle_input,
     );
+    const model_config = try llm_assets.parseModelFromSlice(
+        allocator,
+        llm_assets.sample_model_input,
+    );
     const tokenizer_config = try tokenizer.parseConfigFromSlice(
         allocator,
         tokenizer.sample_config_input,
@@ -128,12 +153,15 @@ pub fn runtimeAssets(allocator: std.mem.Allocator) !llm_assets.LoadedLlmRuntimeA
 
     return .{
         .bundle = bundle,
+        .model_config = model_config,
         .tokenizer_config = tokenizer_config,
         .weights_config = null,
         .owned_binary_values = null,
         .assets = .{
             .tokenizer = tokenizer.defaultTokenizer(),
             .weights = weights.defaultWeights(),
+            .model = model_config.value,
+            .weights_format = weights_format,
         },
     };
 }
@@ -179,6 +207,7 @@ pub fn debugCandidatesIncludes() [2]decoder.DecoderCandidateScore {
             .output_projection_milli = preferred_projection_milli,
             .transition_bias_milli = conditioning_bias_milli,
             .conditioned_score_milli = conditioned_score_milli,
+            .conditioned_probability_milli = conditioned_probability_milli,
             .model_score_milli = model_score_milli,
             .prompt_context_bias_milli = preferred_context_bias_milli,
             .prompt_context_score_milli = preferred_score_milli,
@@ -190,6 +219,7 @@ pub fn debugCandidatesIncludes() [2]decoder.DecoderCandidateScore {
             .output_projection_milli = metal_projection_milli,
             .transition_bias_milli = 0,
             .conditioned_score_milli = raw_score_milli,
+            .conditioned_probability_milli = 0,
             .model_score_milli = metal_projection_milli,
             .prompt_context_bias_milli = 300,
             .prompt_context_score_milli = model_score_milli,
@@ -206,6 +236,7 @@ pub fn debugCandidatesSemantic() [2]decoder.DecoderCandidateScore {
             .output_projection_milli = pad_projection_score_milli,
             .transition_bias_milli = 0,
             .conditioned_score_milli = pad_raw_logit_milli,
+            .conditioned_probability_milli = 0,
             .model_score_milli = pad_projection_score_milli,
             .prompt_context_bias_milli = 0,
             .prompt_context_score_milli = pad_projection_score_milli,
@@ -217,6 +248,7 @@ pub fn debugCandidatesSemantic() [2]decoder.DecoderCandidateScore {
             .output_projection_milli = preferred_projection_milli,
             .transition_bias_milli = conditioning_bias_milli,
             .conditioned_score_milli = conditioned_score_milli,
+            .conditioned_probability_milli = conditioned_probability_milli,
             .model_score_milli = model_score_milli,
             .prompt_context_bias_milli = preferred_context_bias_milli,
             .prompt_context_score_milli = preferred_score_milli,
@@ -255,6 +287,17 @@ pub fn debugTrace(candidates: []decoder.DecoderCandidateScore) decoder.DecoderFi
     return .{
         .family = family_name,
         .fixture_name = fixture_name,
+        .backend = backend_name,
+        .loader = loader_name,
+        .model_name = model_name,
+        .model_architecture = model_architecture,
+        .model_vocab_size = model_vocab_size,
+        .model_context_length = model_context_length,
+        .weights_format = weights_format,
+        .dispatched_kernels = .{
+            .bias_add_f32 = true,
+            .softmax_f32 = true,
+        },
         .prompt_text = prompt_text,
         .prompt_tail_token_id = bolt_token_id,
         .prompt_tail_token_text = bolt_token_text,
@@ -264,6 +307,7 @@ pub fn debugTrace(candidates: []decoder.DecoderCandidateScore) decoder.DecoderFi
         .conditioned_top_token_id = zig_token_id,
         .conditioned_top_token_text = zig_token_text,
         .conditioned_top_score_milli = conditioned_score_milli,
+        .conditioned_top_probability_milli = conditioned_probability_milli,
         .model_top_token_id = zig_token_id,
         .model_top_token_text = zig_token_text,
         .model_top_score_milli = model_score_milli,

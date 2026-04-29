@@ -1,5 +1,6 @@
 const std = @import("std");
 const metal = @import("../metal/context.zig");
+const llm_assets = @import("../runtime/llm_assets.zig");
 const tokenizer = @import("../tokenizer.zig");
 const weights = @import("../weights.zig");
 const llm_samples = @import("../testing/llm_samples.zig");
@@ -10,6 +11,22 @@ pub const preferred_route_label = "prompt_context";
 pub const DecoderModel = struct {
     vocab_size: usize,
     hidden_size: usize = 4,
+};
+
+pub const DecoderKernelEvidence = struct {
+    bias_add_f32: bool,
+    softmax_f32: bool,
+};
+
+pub const DecoderRuntimeInfo = struct {
+    backend: []const u8,
+    loader: []const u8,
+    model_name: []const u8,
+    model_architecture: []const u8,
+    model_vocab_size: usize,
+    model_context_length: usize,
+    weights_format: []const u8,
+    dispatched_kernels: DecoderKernelEvidence,
 };
 
 pub const DecoderFixturePayload = struct {
@@ -52,6 +69,14 @@ pub const DecoderRouteComparison = struct {
 pub const DecoderFixtureSummary = struct {
     family: []const u8,
     fixture_name: []const u8,
+    backend: []const u8,
+    loader: []const u8,
+    model_name: []const u8,
+    model_architecture: []const u8,
+    model_vocab_size: usize,
+    model_context_length: usize,
+    weights_format: []const u8,
+    dispatched_kernels: DecoderKernelEvidence,
     prompt_token_count: usize,
     prompt_sum: usize,
     logits_count: usize,
@@ -85,6 +110,7 @@ pub const DecoderFixtureSummary = struct {
     prompt_condition_bias_milli: usize,
     prompt_context_bias_milli: usize,
     conditioned_next_score_milli: usize,
+    conditioned_next_probability_milli: usize,
     model_next_score_milli: usize,
     prompt_context_next_score_milli: usize,
     model_condition_gap_milli: usize,
@@ -100,6 +126,7 @@ pub const DecoderCandidateScore = struct {
     output_projection_milli: usize,
     transition_bias_milli: usize,
     conditioned_score_milli: usize,
+    conditioned_probability_milli: usize,
     model_score_milli: usize,
     prompt_context_bias_milli: usize,
     prompt_context_score_milli: usize,
@@ -108,6 +135,14 @@ pub const DecoderCandidateScore = struct {
 pub const DecoderFixtureTrace = struct {
     family: []const u8,
     fixture_name: []const u8,
+    backend: []const u8,
+    loader: []const u8,
+    model_name: []const u8,
+    model_architecture: []const u8,
+    model_vocab_size: usize,
+    model_context_length: usize,
+    weights_format: []const u8,
+    dispatched_kernels: DecoderKernelEvidence,
     prompt_text: []const u8,
     prompt_tail_token_id: usize,
     prompt_tail_token_text: []const u8,
@@ -117,6 +152,7 @@ pub const DecoderFixtureTrace = struct {
     conditioned_top_token_id: usize,
     conditioned_top_token_text: []const u8,
     conditioned_top_score_milli: usize,
+    conditioned_top_probability_milli: usize,
     model_top_token_id: usize,
     model_top_token_text: []const u8,
     model_top_score_milli: usize,
@@ -134,6 +170,13 @@ pub const DecoderFixtureTrace = struct {
     model_to_prompt_context_gain_milli: usize,
     route_comparison: DecoderRouteComparison,
     candidates: []DecoderCandidateScore,
+};
+
+const ConditionedPathResult = struct {
+    token_score: weights.TokenScore,
+    backend: []const u8,
+    dispatched_kernels: DecoderKernelEvidence,
+    probabilities: []f32,
 };
 
 pub const DecoderGeneratedToken = struct {
@@ -199,8 +242,45 @@ pub fn summarizeFixtureWithRuntime(
     token_decoder: tokenizer.FixtureTokenizer,
     projection: weights.FixtureDecoderWeights,
 ) !DecoderFixtureSummary {
+    return summarizeFixtureWithRuntimeInfo(
+        payload,
+        token_decoder,
+        projection,
+        .{
+            .loader = "builtin-default",
+            .model_name = "default-decoder",
+            .architecture = "tiny-transition-decoder",
+            .vocab_size = projection.vocabSize(),
+            .hidden_size = projection.vocabSize(),
+            .context_length = payload.token_ids.len + 1,
+        },
+        "builtin",
+    );
+}
+
+pub fn summarizeFixtureWithRuntimeAssets(
+    payload: DecoderFixturePayload,
+    assets: llm_assets.LlmRuntimeAssets,
+) !DecoderFixtureSummary {
+    return summarizeFixtureWithRuntimeInfo(
+        payload,
+        assets.tokenizer,
+        assets.weights,
+        assets.model,
+        assets.weights_format,
+    );
+}
+
+pub fn summarizeFixtureWithRuntimeInfo(
+    payload: DecoderFixturePayload,
+    token_decoder: tokenizer.FixtureTokenizer,
+    projection: weights.FixtureDecoderWeights,
+    model_config: llm_assets.ModelConfig,
+    weights_format: []const u8,
+) !DecoderFixtureSummary {
     const model = DecoderModel{
         .vocab_size = projection.vocabSize(),
+        .hidden_size = model_config.hidden_size,
     };
     if (!std.mem.eql(u8, payload.family, fixture_family)) {
         return error.UnexpectedFamily;
@@ -217,6 +297,8 @@ pub fn summarizeFixtureWithRuntime(
     if (payload.token_ids.len == 0) {
         return error.EmptyPrompt;
     }
+    if (model_config.vocab_size != model.vocab_size) return error.ModelVocabSizeMismatch;
+    if (model_config.context_length < payload.token_ids.len) return error.ContextLengthTooSmall;
 
     const encoded_prompt = try token_decoder.encodeText(std.heap.page_allocator, payload.prompt_text);
     defer std.heap.page_allocator.free(encoded_prompt);
@@ -253,11 +335,24 @@ pub fn summarizeFixtureWithRuntime(
     const prompt_tail_token_id = payload.token_ids[payload.token_ids.len - 1];
     const prompt_tail_token_text = try token_decoder.decodeToken(prompt_tail_token_id);
     const next_token_text = try token_decoder.decodeToken(next_token_id);
-    const conditioned_top = try conditionedTopTokenWithOptionalMetal(
+    const conditioned_path = try conditionedPathWithOptionalMetal(
         payload.logits,
         prompt_tail_token_id,
         projection,
     );
+    defer std.heap.page_allocator.free(conditioned_path.probabilities);
+
+    const runtime_info: DecoderRuntimeInfo = .{
+        .backend = conditioned_path.backend,
+        .loader = model_config.loader,
+        .model_name = model_config.model_name,
+        .model_architecture = model_config.architecture,
+        .model_vocab_size = model_config.vocab_size,
+        .model_context_length = model_config.context_length,
+        .weights_format = weights_format,
+        .dispatched_kernels = conditioned_path.dispatched_kernels,
+    };
+    const conditioned_top = conditioned_path.token_score;
     const conditioned_next_token_id = conditioned_top.token_id;
     const conditioned_next_token_text = try token_decoder.decodeToken(conditioned_next_token_id);
     const model_top = try projection.modelTopToken(prompt_tail_token_id);
@@ -281,6 +376,7 @@ pub fn summarizeFixtureWithRuntime(
         prompt_context_next_token_id,
     );
     const conditioned_next_score_milli = conditioned_top.score_milli;
+    const conditioned_next_probability_milli = @as(usize, @intFromFloat((conditioned_path.probabilities[conditioned_next_token_id] * 1000.0) + 0.5));
     const model_next_score_milli = model_top.score_milli;
     const prompt_context_next_score_milli = prompt_context_top.score_milli;
     const raw_top_logit_milli = @as(usize, @intFromFloat((payload.logits[next_token_id] * 1000.0) + 0.5));
@@ -356,6 +452,14 @@ pub fn summarizeFixtureWithRuntime(
     const summary: DecoderFixtureSummary = .{
         .family = payload.family,
         .fixture_name = payload.fixture_name,
+        .backend = runtime_info.backend,
+        .loader = runtime_info.loader,
+        .model_name = runtime_info.model_name,
+        .model_architecture = runtime_info.model_architecture,
+        .model_vocab_size = runtime_info.model_vocab_size,
+        .model_context_length = runtime_info.model_context_length,
+        .weights_format = runtime_info.weights_format,
+        .dispatched_kernels = runtime_info.dispatched_kernels,
         .prompt_token_count = payload.token_ids.len,
         .prompt_sum = prompt_sum,
         .logits_count = payload.logits.len,
@@ -389,6 +493,7 @@ pub fn summarizeFixtureWithRuntime(
         .prompt_condition_bias_milli = prompt_condition_bias_milli,
         .prompt_context_bias_milli = prompt_context_route.context_bias_milli.?,
         .conditioned_next_score_milli = conditioned_route.score_milli,
+        .conditioned_next_probability_milli = conditioned_next_probability_milli,
         .model_next_score_milli = model_route.score_milli,
         .prompt_context_next_score_milli = prompt_context_route.score_milli,
         .model_condition_gap_milli = model_condition_gap_milli,
@@ -399,21 +504,15 @@ pub fn summarizeFixtureWithRuntime(
     return summary;
 }
 
-fn conditionedTopTokenWithOptionalMetal(
+fn conditionedPathWithOptionalMetal(
     logits: []const f32,
     source_token_id: usize,
     projection: weights.FixtureDecoderWeights,
-) !weights.TokenScore {
-    if (!metal.Context.isAvailable()) {
-        return projection.conditionedTopToken(logits, source_token_id);
-    }
-
-    var context = metal.Context.init() catch {
-        return projection.conditionedTopToken(logits, source_token_id);
-    };
-    defer context.deinit();
-
+) !ConditionedPathResult {
     const vocab_size = projection.vocabSize();
+    const probabilities = try std.heap.page_allocator.alloc(f32, vocab_size);
+    errdefer std.heap.page_allocator.free(probabilities);
+
     const row_start = source_token_id * vocab_size;
     const row_end = row_start + vocab_size;
     const bias_row = projection.transition_bias[row_start..row_end];
@@ -421,11 +520,42 @@ fn conditionedTopTokenWithOptionalMetal(
     const conditioned_scores = try std.heap.page_allocator.alloc(f32, vocab_size);
     defer std.heap.page_allocator.free(conditioned_scores);
 
-    try context.addF32(logits, bias_row, conditioned_scores);
+    if (metal.Context.isAvailable()) metal_path: {
+        var context = metal.Context.init() catch break :metal_path;
+        defer context.deinit();
 
+        try context.biasAddF32(logits, bias_row, conditioned_scores, 1, vocab_size);
+        try context.softmaxF32(conditioned_scores, probabilities);
+        return .{
+            .token_score = topTokenFromScores(conditioned_scores),
+            .backend = "metal",
+            .dispatched_kernels = .{
+                .bias_add_f32 = true,
+                .softmax_f32 = true,
+            },
+            .probabilities = probabilities,
+        };
+    }
+
+    for (logits, bias_row, conditioned_scores) |logit, bias, *score| {
+        score.* = logit + bias;
+    }
+    cpuSoftmax(conditioned_scores, probabilities);
+    return .{
+        .token_score = topTokenFromScores(conditioned_scores),
+        .backend = "cpu",
+        .dispatched_kernels = .{
+            .bias_add_f32 = false,
+            .softmax_f32 = false,
+        },
+        .probabilities = probabilities,
+    };
+}
+
+fn topTokenFromScores(scores: []const f32) weights.TokenScore {
     var token_id: usize = 0;
-    var best_score = conditioned_scores[0];
-    for (conditioned_scores[1..], 1..) |score, index| {
+    var best_score = scores[0];
+    for (scores[1..], 1..) |score, index| {
         if (score > best_score) {
             best_score = score;
             token_id = index;
@@ -436,6 +566,23 @@ fn conditionedTopTokenWithOptionalMetal(
         .token_id = token_id,
         .score_milli = @as(usize, @intFromFloat((best_score * 1000.0) + 0.5)),
     };
+}
+
+fn cpuSoftmax(input: []const f32, output: []f32) void {
+    var max_value = input[0];
+    for (input[1..]) |value| {
+        max_value = @max(max_value, value);
+    }
+
+    var sum: f32 = 0.0;
+    for (input, output) |value, *out| {
+        const shifted = @exp(value - max_value);
+        out.* = shifted;
+        sum += shifted;
+    }
+    for (output) |*value| {
+        value.* /= sum;
+    }
 }
 
 pub fn validateSummaryConsistency(summary: DecoderFixtureSummary) !void {
@@ -532,6 +679,15 @@ pub fn validateSummary(
     if (!std.mem.eql(u8, summary.fixture_name, expected.fixture_name)) {
         return error.FixtureNameMismatch;
     }
+    if (!std.mem.eql(u8, summary.backend, expected.backend)) return error.BackendMismatch;
+    if (!std.mem.eql(u8, summary.loader, expected.loader)) return error.LoaderMismatch;
+    if (!std.mem.eql(u8, summary.model_name, expected.model_name)) return error.ModelNameMismatch;
+    if (!std.mem.eql(u8, summary.model_architecture, expected.model_architecture)) return error.ModelArchitectureMismatch;
+    if (summary.model_vocab_size != expected.model_vocab_size) return error.ModelVocabSizeMismatch;
+    if (summary.model_context_length != expected.model_context_length) return error.ModelContextLengthMismatch;
+    if (!std.mem.eql(u8, summary.weights_format, expected.weights_format)) return error.WeightsFormatMismatch;
+    if (summary.dispatched_kernels.bias_add_f32 != expected.dispatched_kernels.bias_add_f32) return error.KernelEvidenceMismatch;
+    if (summary.dispatched_kernels.softmax_f32 != expected.dispatched_kernels.softmax_f32) return error.KernelEvidenceMismatch;
     if (summary.prompt_token_count != expected.prompt_token_count) return error.TokenCountMismatch;
     if (summary.prompt_sum != expected.prompt_sum) return error.PromptSumMismatch;
     if (summary.logits_count != expected.logits_count) return error.LogitsCountMismatch;
@@ -594,6 +750,7 @@ pub fn validateSummary(
     if (summary.prompt_condition_bias_milli != expected.prompt_condition_bias_milli) return error.PromptConditionBiasMismatch;
     if (summary.prompt_context_bias_milli != expected.prompt_context_bias_milli) return error.PromptContextBiasMismatch;
     if (summary.conditioned_next_score_milli != expected.conditioned_next_score_milli) return error.ConditionedNextScoreMismatch;
+    if (summary.conditioned_next_probability_milli != expected.conditioned_next_probability_milli) return error.ConditionedNextProbabilityMismatch;
     if (summary.model_next_score_milli != expected.model_next_score_milli) return error.ModelNextScoreMismatch;
     if (summary.prompt_context_next_score_milli != expected.prompt_context_next_score_milli) return error.PromptContextNextScoreMismatch;
     if (summary.model_condition_gap_milli != expected.model_condition_gap_milli) return error.ModelConditionGapMismatch;
@@ -611,7 +768,31 @@ pub fn traceFixtureWithRuntime(
         token_decoder,
         projection,
     );
+    return traceFixtureFromSummary(allocator, payload, token_decoder, projection, summary);
+}
 
+pub fn traceFixtureWithRuntimeAssets(
+    allocator: std.mem.Allocator,
+    payload: DecoderFixturePayload,
+    assets: llm_assets.LlmRuntimeAssets,
+) !DecoderFixtureTrace {
+    const summary = try summarizeFixtureWithRuntimeAssets(payload, assets);
+    return traceFixtureFromSummary(
+        allocator,
+        payload,
+        assets.tokenizer,
+        assets.weights,
+        summary,
+    );
+}
+
+fn traceFixtureFromSummary(
+    allocator: std.mem.Allocator,
+    payload: DecoderFixturePayload,
+    token_decoder: tokenizer.FixtureTokenizer,
+    projection: weights.FixtureDecoderWeights,
+    summary: DecoderFixtureSummary,
+) !DecoderFixtureTrace {
     const candidates = try allocator.alloc(DecoderCandidateScore, payload.logits.len);
     errdefer allocator.free(candidates);
 
@@ -644,6 +825,10 @@ pub fn traceFixtureWithRuntime(
             .output_projection_milli = output_projection_milli,
             .transition_bias_milli = transition_bias_milli,
             .conditioned_score_milli = conditioned_score_milli,
+            .conditioned_probability_milli = if (token_id == summary.conditioned_next_token_id)
+                summary.conditioned_next_probability_milli
+            else
+                0,
             .model_score_milli = model_score_milli,
             .prompt_context_bias_milli = prompt_context_bias_milli,
             .prompt_context_score_milli = prompt_context_score_milli,
@@ -660,6 +845,14 @@ pub fn traceFixtureWithRuntime(
     const trace: DecoderFixtureTrace = .{
         .family = payload.family,
         .fixture_name = payload.fixture_name,
+        .backend = summary.backend,
+        .loader = summary.loader,
+        .model_name = summary.model_name,
+        .model_architecture = summary.model_architecture,
+        .model_vocab_size = summary.model_vocab_size,
+        .model_context_length = summary.model_context_length,
+        .weights_format = summary.weights_format,
+        .dispatched_kernels = summary.dispatched_kernels,
         .prompt_text = payload.prompt_text,
         .prompt_tail_token_id = summary.prompt_tail_token_id,
         .prompt_tail_token_text = summary.prompt_tail_token_text,
@@ -669,6 +862,7 @@ pub fn traceFixtureWithRuntime(
         .conditioned_top_token_id = conditioned.token_id,
         .conditioned_top_token_text = conditioned.token_text,
         .conditioned_top_score_milli = conditioned.score_milli,
+        .conditioned_top_probability_milli = summary.conditioned_next_probability_milli,
         .model_top_token_id = model.token_id,
         .model_top_token_text = model.token_text,
         .model_top_score_milli = model.score_milli,
@@ -835,8 +1029,10 @@ fn parseSamplePayload(allocator: std.mem.Allocator) !std.json.Parsed(DecoderFixt
 fn traceSampleFixture(allocator: std.mem.Allocator) !DecoderFixtureTrace {
     var parsed = try parseSamplePayload(allocator);
     defer parsed.deinit();
+    var runtime_assets = try llm_samples.runtimeAssets(allocator);
+    defer runtime_assets.deinit(allocator);
 
-    return traceFixture(allocator, parsed.value);
+    return traceFixtureWithRuntimeAssets(allocator, parsed.value, runtime_assets.assets);
 }
 
 fn decodeSampleFixture(
@@ -907,8 +1103,10 @@ test "summarize decoder fixture payload" {
     const allocator = std.testing.allocator;
     var parsed = try parseSamplePayload(allocator);
     defer parsed.deinit();
+    var runtime_assets = try llm_samples.runtimeAssets(allocator);
+    defer runtime_assets.deinit(allocator);
 
-    const summary = try summarizeFixture(parsed.value);
+    const summary = try summarizeFixtureWithRuntimeAssets(parsed.value, runtime_assets.assets);
     const expected = llm_samples.summary();
     try validateSummary(summary, expected);
 }
@@ -953,12 +1151,15 @@ test "decode fixture produces deterministic rollout" {
 }
 
 test "conditioned route remains deterministic when Metal backs the logits-plus-bias step" {
-    const conditioned = try conditionedTopTokenWithOptionalMetal(
+    const conditioned = try conditionedPathWithOptionalMetal(
         &.{ 0.1, 0.2, 0.9, 0.4 },
         llm_samples.bolt_token_id,
         weights.defaultWeights(),
     );
+    defer std.heap.page_allocator.free(conditioned.probabilities);
 
-    try std.testing.expectEqual(@as(usize, llm_samples.zig_token_id), conditioned.token_id);
-    try std.testing.expectEqual(@as(usize, llm_samples.conditioned_score_milli), conditioned.score_milli);
+    try std.testing.expectEqual(@as(usize, llm_samples.zig_token_id), conditioned.token_score.token_id);
+    try std.testing.expectEqual(@as(usize, llm_samples.conditioned_score_milli), conditioned.token_score.score_milli);
+    try std.testing.expectEqual(metal.Context.isAvailable(), conditioned.dispatched_kernels.bias_add_f32);
+    try std.testing.expectEqual(metal.Context.isAvailable(), conditioned.dispatched_kernels.softmax_f32);
 }

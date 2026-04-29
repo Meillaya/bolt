@@ -52,11 +52,10 @@ pub fn main(init: std.process.Init) !void {
     );
     defer runtime_assets.deinit(allocator);
 
-    var trace = try decoder.traceFixtureWithRuntime(
+    var trace = try decoder.traceFixtureWithRuntimeAssets(
         allocator,
         payload.value,
-        runtime_assets.assets.tokenizer,
-        runtime_assets.assets.weights,
+        runtime_assets.assets,
     );
     defer decoder.freeTrace(allocator, &trace);
 
@@ -67,6 +66,17 @@ pub fn main(init: std.process.Init) !void {
     try stdout.writeAll("{\n");
     try stdout.print("  \"family\": \"{s}\",\n", .{trace.family});
     try stdout.print("  \"fixture_name\": \"{s}\",\n", .{trace.fixture_name});
+    try stdout.print("  \"backend\": \"{s}\",\n", .{trace.backend});
+    try stdout.print("  \"loader\": \"{s}\",\n", .{trace.loader});
+    try stdout.print("  \"model_name\": \"{s}\",\n", .{trace.model_name});
+    try stdout.print("  \"model_architecture\": \"{s}\",\n", .{trace.model_architecture});
+    try stdout.print("  \"model_vocab_size\": {d},\n", .{trace.model_vocab_size});
+    try stdout.print("  \"model_context_length\": {d},\n", .{trace.model_context_length});
+    try stdout.print("  \"weights_format\": \"{s}\",\n", .{trace.weights_format});
+    try stdout.writeAll("  \"dispatched_kernels\": {\n");
+    try stdout.print("    \"bias_add_f32\": {any},\n", .{trace.dispatched_kernels.bias_add_f32});
+    try stdout.print("    \"softmax_f32\": {any}\n", .{trace.dispatched_kernels.softmax_f32});
+    try stdout.writeAll("  },\n");
     try stdout.writeAll("  \"prompt_text\": ");
     try writeJsonString(stdout, trace.prompt_text);
     try stdout.writeAll(",\n");
@@ -82,6 +92,8 @@ pub fn main(init: std.process.Init) !void {
     try stdout.writeAll("  \"conditioned_top_token_text\": ");
     try writeJsonString(stdout, trace.conditioned_top_token_text);
     try stdout.writeAll(",\n");
+    try stdout.print("  \"conditioned_top_score_milli\": {d},\n", .{trace.conditioned_top_score_milli});
+    try stdout.print("  \"conditioned_top_probability_milli\": {d},\n", .{trace.conditioned_top_probability_milli});
     try stdout.writeAll("  \"candidates\": [\n");
     for (trace.candidates, 0..) |candidate, index| {
         try stdout.writeAll("    {\n");
@@ -92,7 +104,8 @@ pub fn main(init: std.process.Init) !void {
         try stdout.print("      \"raw_logit_milli\": {d},\n", .{candidate.raw_logit_milli});
         try stdout.print("      \"output_projection_milli\": {d},\n", .{candidate.output_projection_milli});
         try stdout.print("      \"transition_bias_milli\": {d},\n", .{candidate.transition_bias_milli});
-        try stdout.print("      \"conditioned_score_milli\": {d}\n", .{candidate.conditioned_score_milli});
+        try stdout.print("      \"conditioned_score_milli\": {d},\n", .{candidate.conditioned_score_milli});
+        try stdout.print("      \"conditioned_probability_milli\": {d}\n", .{candidate.conditioned_probability_milli});
         try stdout.writeAll("    }");
         if (index + 1 != trace.candidates.len) {
             try stdout.writeAll(",\n");

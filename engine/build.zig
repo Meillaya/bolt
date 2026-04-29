@@ -136,6 +136,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(check_llm_fixture);
 
+    const benchmark_kernels = b.addExecutable(.{
+        .name = "benchmark_kernels",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/benchmark_kernels.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bolt", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(benchmark_kernels);
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -164,6 +177,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tensor_unit_tests = b.addRunArtifact(tensor_unit_tests);
+
+    const kernel_unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../tests/unit/kernel_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bolt", .module = mod },
+            },
+        }),
+    });
+    const run_kernel_unit_tests = b.addRunArtifact(kernel_unit_tests);
 
     const tokenizer_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -229,6 +254,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_layout_unit_tests.step);
     test_step.dependOn(&run_tensor_unit_tests.step);
+    test_step.dependOn(&run_kernel_unit_tests.step);
     test_step.dependOn(&run_tokenizer_unit_tests.step);
     test_step.dependOn(&run_weights_unit_tests.step);
     test_step.dependOn(&run_manifest_unit_tests.step);

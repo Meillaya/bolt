@@ -36,12 +36,34 @@ test "mnist committed fixture payload matches committed golden summary" {
     );
     defer allocator.free(expected_path);
 
+    const runtime_bundle_path = try std.fs.path.join(
+        allocator,
+        &.{ "../python/fixtures/mnist", manifest.value.runtime_bundle_file.? },
+    );
+    defer allocator.free(runtime_bundle_path);
+
     var payload = try bolt.mnist.loadFixturePayloadFromFile(std.testing.io, allocator, payload_path);
     defer payload.deinit();
 
     var expected = try bolt.mnist.loadExpectedSummaryFromFile(std.testing.io, allocator, expected_path);
     defer expected.deinit();
 
-    const summary = try bolt.mnist.summarizeFixture(payload.value);
+    const manifest_context = .{
+        .runtime_bundle_path = @as(?[]u8, runtime_bundle_path),
+    };
+    var runtime_assets = try bolt.runtime.mnist_assets.loadFromManifestContext(
+        std.testing.io,
+        allocator,
+        manifest_context,
+    );
+    defer runtime_assets.deinit(allocator);
+
+    const summary = try bolt.mnist.summarizeFixtureWithRuntime(payload.value, runtime_assets.assets);
     try bolt.mnist.validateSummary(summary, expected.value);
+    try std.testing.expectEqualStrings("metal", summary.backend);
+    try std.testing.expect(summary.dispatched_kernels.matmul_f32);
+    try std.testing.expect(summary.dispatched_kernels.bias_add_f32);
+    try std.testing.expect(summary.dispatched_kernels.softmax_f32);
+    try std.testing.expectEqual(@as(usize, 7), summary.predicted_label);
+    try std.testing.expect(summary.top_logit_milli > summary.logits_milli[9]);
 }

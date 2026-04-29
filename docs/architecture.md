@@ -51,15 +51,68 @@ Current committed kernels:
 
 - `copy_f32` — used to round-trip MNIST tensor data through Metal before CPU-side proof summarization
 - `add_f32` — used to start the decoder-side Metal path by computing conditioned logits plus one transition-bias row
+- `matmul_f32` — first reusable dense-layer primitive for MNIST/decoder expansion
+- `bias_add_f32` — row-wise bias application for batched dense outputs
+- `relu_f32` — activation primitive
+- `reduce_sum_f32` — scalar reduction primitive used to validate reduction dispatch shape
+- `softmax_f32` — normalization primitive for logits/probability vectors
 
-This is deliberately not a full graph runtime yet. It is the first vertical slice that proves:
+This is deliberately not a full graph runtime yet. It is the first vertical slice plus the Phase 2 primitive baseline and Phase 3 MNIST inference path that prove:
 
 1. committed shader source
 2. runtime shader compilation
 3. Metal device + command queue setup
 4. CPU-visible shared-buffer allocation plus explicit materialization-on-demand
-5. one MNIST Metal-backed op first
+5. a real MNIST dense-inference path backed by Metal matmul, bias add, and softmax
 6. one initial LLM-side Metal-backed op after MNIST parity stayed green
+7. a minimal reusable kernel suite with correctness coverage and timestamped benchmark artifacts
+
+## MNIST runtime bundle contract
+
+The MNIST fixture now has a small runtime bundle rather than deriving the label from pixel-sum proof math:
+
+```text
+manifest.json
+  -> mnist-smoke.runtime.json
+       -> mnist-smoke.weights.bin
+```
+
+Current binary layout:
+
+```text
+[ dense_weights (784 * 10 float32 values, row-major input x class) ]
+[ bias (10 float32 values) ]
+```
+
+Native inference shape:
+
+```text
+pixels[1 x 784]
+  -> matmul_f32(dense_weights[784 x 10])
+  -> bias_add_f32(bias[10])
+  -> softmax_f32
+  -> argmax(logits)
+```
+
+`run_mnist_fixture` emits backend evidence and kernel-dispatch booleans alongside logits/probabilities in milli-units so the real path is distinguishable from the older proof-only pixel-sum label.
+
+## Benchmark artifact contract
+
+`research/scripts/run_bench.sh` is now a real benchmark gate rather than a placeholder. It first runs `run_compare.sh`, then builds and executes `engine/zig-out/bin/benchmark_kernels` plus the committed MNIST and LLM inference fixtures.
+
+Each run writes:
+
+```text
+artifacts/bench/<timestamp>/kernel-bench.json
+artifacts/bench/<timestamp>/mnist-inference.json
+artifacts/bench/<timestamp>/llm-inference.json
+artifacts/bench/<timestamp>/summary.json
+artifacts/bench/<timestamp>/summary.txt
+artifacts/bench/<timestamp>/manifest.json
+artifacts/bench/latest/...
+```
+
+The benchmark report is intentionally simple and deterministic: it records backend, iteration count, primitive names, tensor-size metadata, elapsed nanoseconds, and a checksum for each primitive, then records MNIST and LLM backend/kernel evidence. `summary.json` separates `correctness_gates` from `performance_observations` so smoke-fixture pass/fail evidence is not confused with timing claims. Performance claims should remain scoped to this primitive + smoke-fixture baseline until broader MNIST/decoder benchmark suites land.
 
 ## Proof-surface rule
 
@@ -81,6 +134,7 @@ Current shape:
 ```text
 manifest.json
   -> llm-smoke.runtime.json
+       -> llm-smoke.model.json
        -> llm-smoke.tokenizer.json
        -> llm-smoke.weights.bin
 ```
@@ -88,6 +142,7 @@ manifest.json
 Responsibilities:
 - `manifest.json` selects the proof family, payload, expected summary, and one runtime bundle file.
 - `llm-smoke.runtime.json` resolves the runtime assets for that fixture.
+- `llm-smoke.model.json` carries tiny deterministic model metadata: loader, model name, architecture, vocab size, hidden size, and context length.
 - `llm-smoke.tokenizer.json` carries the tiny vocab contract.
 - `llm-smoke.weights.bin` carries raw little-endian float32 decoder weights.
 
@@ -107,6 +162,8 @@ Interpretation:
 - the summary/trace surfaces now expose both views:
   - fixture-logit-conditioned scoring
   - internal model-score routing from projection+bias
+- the conditioned route dispatches Metal `bias_add_f32` and `softmax_f32` when Metal is available, and reports backend plus dispatched-kernel evidence in the run/trace/debug surfaces
+- unsupported deferred formats such as `.safetensors` fail deterministically with `UnsupportedWeightsFormat`; `run_proof.sh` captures that negative loader artifact alongside the positive proof summaries
 - plus a whole-prompt context route derived from the full prompt token list
 - and a decomposed whole-prompt bias total so context accumulation is visible separately from projection weights
 - the summary’s one-step generated preview now aligns with the whole-prompt internal route instead of the raw fixture-logit winner

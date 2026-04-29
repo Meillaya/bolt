@@ -11,6 +11,11 @@
 @property(nonatomic, strong) id<MTLLibrary> library;
 @property(nonatomic, strong) id<MTLComputePipelineState> vectorCopyState;
 @property(nonatomic, strong) id<MTLComputePipelineState> vectorAddState;
+@property(nonatomic, strong) id<MTLComputePipelineState> matrixMultiplyState;
+@property(nonatomic, strong) id<MTLComputePipelineState> biasAddState;
+@property(nonatomic, strong) id<MTLComputePipelineState> vectorReluState;
+@property(nonatomic, strong) id<MTLComputePipelineState> reduceSumState;
+@property(nonatomic, strong) id<MTLComputePipelineState> softmaxState;
 @end
 
 @implementation BoltMetalRuntime
@@ -50,6 +55,38 @@ static BOOL bolt_validate_buffer_count(BoltMetalBuffer *buffer, size_t count, NS
     return YES;
 }
 
+static id<MTLComputePipelineState> bolt_make_pipeline(
+    id<MTLDevice> device,
+    id<MTLLibrary> library,
+    NSString *name,
+    char **error_out
+) {
+    NSError *error = nil;
+    id<MTLFunction> function = [library newFunctionWithName:name];
+    if (function == nil) {
+        bolt_set_error(error_out, [NSString stringWithFormat:@"missing Metal kernel %@", name]);
+        return nil;
+    }
+
+    id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function
+                                                                                 error:&error];
+    if (pipeline == nil) {
+        NSString *description = error.localizedDescription ?: [NSString stringWithFormat:@"failed to create %@ pipeline", name];
+        bolt_set_error(error_out, description);
+        return nil;
+    }
+
+    return pipeline;
+}
+
+static BOOL bolt_validate_u32(size_t value, NSString *label, char **error_out) {
+    if (value > UINT32_MAX) {
+        bolt_set_error(error_out, [NSString stringWithFormat:@"%@ exceeds Metal uint limit", label]);
+        return NO;
+    }
+    return YES;
+}
+
 static BOOL bolt_encode_buffer_pipeline(
     BoltMetalRuntime *runtime,
     id<MTLComputePipelineState> pipeline,
@@ -64,6 +101,10 @@ static BOOL bolt_encode_buffer_pipeline(
     }
     if (runtime == nil) {
         bolt_set_error(error_out, @"missing Metal runtime");
+        return NO;
+    }
+    if (pipeline == nil) {
+        bolt_set_error(error_out, @"missing Metal compute pipeline");
         return NO;
     }
     if (!bolt_validate_buffer_count(left_buffer, count, @"left", error_out)) {
@@ -104,6 +145,68 @@ static BOOL bolt_encode_buffer_pipeline(
     const MTLSize grid_size = MTLSizeMake(count, 1, 1);
     const MTLSize threadgroup_size = MTLSizeMake(thread_width, 1, 1);
     [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
+    [encoder endEncoding];
+
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    if (command_buffer.error != nil) {
+        NSString *description = command_buffer.error.localizedDescription ?: @"Metal command buffer failed";
+        bolt_set_error(error_out, description);
+        return NO;
+    }
+
+    return YES;
+}
+
+static BOOL bolt_encode_single_thread_pipeline(
+    BoltMetalRuntime *runtime,
+    id<MTLComputePipelineState> pipeline,
+    BoltMetalBuffer *input_buffer,
+    size_t count,
+    BoltMetalBuffer *output_buffer,
+    size_t output_count,
+    char **error_out
+) {
+    if (count == 0) {
+        return YES;
+    }
+    if (runtime == nil) {
+        bolt_set_error(error_out, @"missing Metal runtime");
+        return NO;
+    }
+    if (pipeline == nil) {
+        bolt_set_error(error_out, @"missing Metal compute pipeline");
+        return NO;
+    }
+    if (!bolt_validate_u32(count, @"element count", error_out)) {
+        return NO;
+    }
+    if (!bolt_validate_buffer_count(input_buffer, count, @"input", error_out)) {
+        return NO;
+    }
+    if (!bolt_validate_buffer_count(output_buffer, output_count, @"output", error_out)) {
+        return NO;
+    }
+
+    id<MTLCommandBuffer> command_buffer = [runtime.commandQueue commandBuffer];
+    if (command_buffer == nil) {
+        bolt_set_error(error_out, @"failed to create Metal command buffer");
+        return NO;
+    }
+
+    id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+    if (encoder == nil) {
+        bolt_set_error(error_out, @"failed to create Metal compute encoder");
+        return NO;
+    }
+
+    const uint32_t element_count = (uint32_t)count;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input_buffer.buffer offset:0 atIndex:0];
+    [encoder setBuffer:output_buffer.buffer offset:0 atIndex:1];
+    [encoder setBytes:&element_count length:sizeof(element_count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
 
     [command_buffer commit];
@@ -162,33 +265,20 @@ void *bolt_metal_context_create(const char *source, size_t source_len, char **er
             return NULL;
         }
 
-        id<MTLFunction> copy_function = [library newFunctionWithName:@"copy_f32"];
-        if (copy_function == nil) {
-            bolt_set_error(error_out, @"missing Metal kernel copy_f32");
-            return NULL;
-        }
-
-        id<MTLFunction> add_function = [library newFunctionWithName:@"add_f32"];
-        if (add_function == nil) {
-            bolt_set_error(error_out, @"missing Metal kernel add_f32");
-            return NULL;
-        }
-
-        id<MTLComputePipelineState> copy_pipeline = [device newComputePipelineStateWithFunction:copy_function
-                                                                                           error:&error];
-        if (copy_pipeline == nil) {
-            NSString *description = error.localizedDescription ?: @"failed to create copy_f32 pipeline";
-            bolt_set_error(error_out, description);
-            return NULL;
-        }
-
-        id<MTLComputePipelineState> add_pipeline = [device newComputePipelineStateWithFunction:add_function
-                                                                                          error:&error];
-        if (add_pipeline == nil) {
-            NSString *description = error.localizedDescription ?: @"failed to create add_f32 pipeline";
-            bolt_set_error(error_out, description);
-            return NULL;
-        }
+        id<MTLComputePipelineState> copy_pipeline = bolt_make_pipeline(device, library, @"copy_f32", error_out);
+        if (copy_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> add_pipeline = bolt_make_pipeline(device, library, @"add_f32", error_out);
+        if (add_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> matmul_pipeline = bolt_make_pipeline(device, library, @"matmul_f32", error_out);
+        if (matmul_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> bias_add_pipeline = bolt_make_pipeline(device, library, @"bias_add_f32", error_out);
+        if (bias_add_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> relu_pipeline = bolt_make_pipeline(device, library, @"relu_f32", error_out);
+        if (relu_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> reduce_sum_pipeline = bolt_make_pipeline(device, library, @"reduce_sum_f32", error_out);
+        if (reduce_sum_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> softmax_pipeline = bolt_make_pipeline(device, library, @"softmax_f32", error_out);
+        if (softmax_pipeline == nil) return NULL;
 
         BoltMetalRuntime *runtime = [[BoltMetalRuntime alloc] init];
         runtime.device = device;
@@ -196,6 +286,11 @@ void *bolt_metal_context_create(const char *source, size_t source_len, char **er
         runtime.library = library;
         runtime.vectorCopyState = copy_pipeline;
         runtime.vectorAddState = add_pipeline;
+        runtime.matrixMultiplyState = matmul_pipeline;
+        runtime.biasAddState = bias_add_pipeline;
+        runtime.vectorReluState = relu_pipeline;
+        runtime.reduceSumState = reduce_sum_pipeline;
+        runtime.softmaxState = softmax_pipeline;
         return (__bridge_retained void *)runtime;
     }
 }
@@ -296,6 +391,231 @@ bool bolt_metal_add_buffer_f32(
             right_buffer,
             count,
             output_buffer,
+            error_out
+        );
+    }
+}
+
+bool bolt_metal_matmul_buffer_f32(
+    void *context_handle,
+    void *left_handle,
+    void *right_handle,
+    size_t rows,
+    size_t cols,
+    size_t inner,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *left_buffer = (__bridge BoltMetalBuffer *)left_handle;
+        BoltMetalBuffer *right_buffer = (__bridge BoltMetalBuffer *)right_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        if (rows == 0 || cols == 0 || inner == 0) {
+            return YES;
+        }
+        if (runtime == nil) {
+            bolt_set_error(error_out, @"missing Metal runtime");
+            return NO;
+        }
+        if (runtime.matrixMultiplyState == nil) {
+            bolt_set_error(error_out, @"missing matmul_f32 pipeline");
+            return NO;
+        }
+        if (!bolt_validate_u32(rows, @"rows", error_out) ||
+            !bolt_validate_u32(cols, @"cols", error_out) ||
+            !bolt_validate_u32(inner, @"inner", error_out)) {
+            return NO;
+        }
+
+        const size_t left_count = rows * inner;
+        const size_t right_count = inner * cols;
+        const size_t output_count = rows * cols;
+        if (!bolt_validate_buffer_count(left_buffer, left_count, @"left", error_out) ||
+            !bolt_validate_buffer_count(right_buffer, right_count, @"right", error_out) ||
+            !bolt_validate_buffer_count(output_buffer, output_count, @"output", error_out)) {
+            return NO;
+        }
+
+        id<MTLCommandBuffer> command_buffer = [runtime.commandQueue commandBuffer];
+        if (command_buffer == nil) {
+            bolt_set_error(error_out, @"failed to create Metal command buffer");
+            return NO;
+        }
+
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        if (encoder == nil) {
+            bolt_set_error(error_out, @"failed to create Metal compute encoder");
+            return NO;
+        }
+
+        const uint32_t row_count = (uint32_t)rows;
+        const uint32_t col_count = (uint32_t)cols;
+        const uint32_t inner_count = (uint32_t)inner;
+        [encoder setComputePipelineState:runtime.matrixMultiplyState];
+        [encoder setBuffer:left_buffer.buffer offset:0 atIndex:0];
+        [encoder setBuffer:right_buffer.buffer offset:0 atIndex:1];
+        [encoder setBuffer:output_buffer.buffer offset:0 atIndex:2];
+        [encoder setBytes:&row_count length:sizeof(row_count) atIndex:3];
+        [encoder setBytes:&col_count length:sizeof(col_count) atIndex:4];
+        [encoder setBytes:&inner_count length:sizeof(inner_count) atIndex:5];
+
+        const NSUInteger thread_width = MAX((NSUInteger)1, MIN((NSUInteger)output_count, runtime.matrixMultiplyState.maxTotalThreadsPerThreadgroup));
+        [encoder dispatchThreads:MTLSizeMake(output_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(thread_width, 1, 1)];
+        [encoder endEncoding];
+
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.error != nil) {
+            NSString *description = command_buffer.error.localizedDescription ?: @"Metal command buffer failed";
+            bolt_set_error(error_out, description);
+            return NO;
+        }
+
+        return YES;
+    }
+}
+
+bool bolt_metal_bias_add_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    void *bias_handle,
+    size_t rows,
+    size_t cols,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *bias_buffer = (__bridge BoltMetalBuffer *)bias_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        if (rows == 0 || cols == 0) {
+            return YES;
+        }
+        if (runtime == nil) {
+            bolt_set_error(error_out, @"missing Metal runtime");
+            return NO;
+        }
+        if (runtime.biasAddState == nil) {
+            bolt_set_error(error_out, @"missing bias_add_f32 pipeline");
+            return NO;
+        }
+        if (!bolt_validate_u32(rows, @"rows", error_out) ||
+            !bolt_validate_u32(cols, @"cols", error_out)) {
+            return NO;
+        }
+
+        const size_t element_count = rows * cols;
+        if (!bolt_validate_buffer_count(input_buffer, element_count, @"input", error_out) ||
+            !bolt_validate_buffer_count(bias_buffer, cols, @"bias", error_out) ||
+            !bolt_validate_buffer_count(output_buffer, element_count, @"output", error_out)) {
+            return NO;
+        }
+
+        id<MTLCommandBuffer> command_buffer = [runtime.commandQueue commandBuffer];
+        if (command_buffer == nil) {
+            bolt_set_error(error_out, @"failed to create Metal command buffer");
+            return NO;
+        }
+
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        if (encoder == nil) {
+            bolt_set_error(error_out, @"failed to create Metal compute encoder");
+            return NO;
+        }
+
+        const uint32_t row_count = (uint32_t)rows;
+        const uint32_t col_count = (uint32_t)cols;
+        [encoder setComputePipelineState:runtime.biasAddState];
+        [encoder setBuffer:input_buffer.buffer offset:0 atIndex:0];
+        [encoder setBuffer:bias_buffer.buffer offset:0 atIndex:1];
+        [encoder setBuffer:output_buffer.buffer offset:0 atIndex:2];
+        [encoder setBytes:&row_count length:sizeof(row_count) atIndex:3];
+        [encoder setBytes:&col_count length:sizeof(col_count) atIndex:4];
+
+        const NSUInteger thread_width = MAX((NSUInteger)1, MIN((NSUInteger)element_count, runtime.biasAddState.maxTotalThreadsPerThreadgroup));
+        [encoder dispatchThreads:MTLSizeMake(element_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(thread_width, 1, 1)];
+        [encoder endEncoding];
+
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.error != nil) {
+            NSString *description = command_buffer.error.localizedDescription ?: @"Metal command buffer failed";
+            bolt_set_error(error_out, description);
+            return NO;
+        }
+
+        return YES;
+    }
+}
+
+bool bolt_metal_relu_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    size_t count,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        return bolt_encode_buffer_pipeline(
+            runtime,
+            runtime.vectorReluState,
+            input_buffer,
+            nil,
+            count,
+            output_buffer,
+            error_out
+        );
+    }
+}
+
+bool bolt_metal_reduce_sum_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    size_t count,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        return bolt_encode_single_thread_pipeline(
+            runtime,
+            runtime.reduceSumState,
+            input_buffer,
+            count,
+            output_buffer,
+            1,
+            error_out
+        );
+    }
+}
+
+bool bolt_metal_softmax_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    size_t count,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        return bolt_encode_single_thread_pipeline(
+            runtime,
+            runtime.softmaxState,
+            input_buffer,
+            count,
+            output_buffer,
+            count,
             error_out
         );
     }

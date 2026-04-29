@@ -10,6 +10,7 @@ pub const weights = @import("weights.zig");
 pub const runtime = struct {
     pub const debug_reports = @import("runtime/debug_reports.zig");
     pub const llm_assets = @import("runtime/llm_assets.zig");
+    pub const mnist_assets = @import("runtime/mnist_assets.zig");
     pub const reporting = @import("runtime/reporting.zig");
     pub const proof_checks = @import("runtime/proof_checks.zig");
     pub const proof_runs = @import("runtime/proof_runs.zig");

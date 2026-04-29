@@ -2,6 +2,7 @@ const std = @import("std");
 const mnist = @import("../models/mnist.zig");
 const decoder = @import("../models/decoder.zig");
 const llm_assets = @import("llm_assets.zig");
+const mnist_assets = @import("mnist_assets.zig");
 const payload_identity = @import("../fixtures/payload_identity.zig");
 
 pub fn mnistCheck(
@@ -29,7 +30,17 @@ pub fn mnistCheck(
     );
     defer expected.deinit();
 
-    const summary = try mnist.summarizeFixture(payload.value);
+    var runtime_assets = try mnist_assets.loadFromManifestContext(
+        io,
+        allocator,
+        context,
+    );
+    defer runtime_assets.deinit(allocator);
+
+    const summary = try mnist.summarizeFixtureWithRuntime(
+        payload.value,
+        runtime_assets.assets,
+    );
     try mnist.validateSummary(summary, expected.value);
 }
 
@@ -65,10 +76,9 @@ pub fn llmCheck(
     );
     defer expected.deinit();
 
-    const summary = try decoder.summarizeFixtureWithRuntime(
+    const summary = try decoder.summarizeFixtureWithRuntimeAssets(
         payload.value,
-        runtime_assets.assets.tokenizer,
-        runtime_assets.assets.weights,
+        runtime_assets.assets,
     );
     try decoder.validateSummary(summary, expected.value);
 }

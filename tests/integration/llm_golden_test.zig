@@ -53,12 +53,18 @@ test "llm committed fixture payload matches committed runtime-bundle golden summ
 
     try std.testing.expectEqualStrings("llm-smoke.tokenizer.json", loaded_assets.bundle.value.tokenizer_file);
     try std.testing.expectEqualStrings("llm-smoke.weights.bin", loaded_assets.bundle.value.weights_file);
+    try std.testing.expectEqualStrings("llm-smoke.model.json", loaded_assets.bundle.value.model_file);
+    try std.testing.expectEqualStrings("bolt-runtime-bundle-v1", loaded_assets.assets.model.loader);
+    try std.testing.expectEqualStrings("llm-smoke-decoder", loaded_assets.assets.model.model_name);
     try bolt.runtime.llm_assets.validate(loaded_assets.assets);
 
-    const summary = try bolt.decoder.summarizeFixtureWithRuntime(
+    const summary = try bolt.decoder.summarizeFixtureWithRuntimeAssets(
         payload.value,
-        loaded_assets.assets.tokenizer,
-        loaded_assets.assets.weights,
+        loaded_assets.assets,
     );
     try bolt.decoder.validateSummary(summary, expected.value);
+    try std.testing.expectEqualStrings("metal", summary.backend);
+    try std.testing.expect(summary.dispatched_kernels.bias_add_f32);
+    try std.testing.expect(summary.dispatched_kernels.softmax_f32);
+    try std.testing.expectEqual(@as(usize, 343), summary.conditioned_next_probability_milli);
 }

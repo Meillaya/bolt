@@ -9,21 +9,32 @@ pub fn formatMnistSummary(
     allocator: std.mem.Allocator,
     summary: mnist.MnistFixtureSummary,
 ) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+
+    try aw.writer.print(
         "{{\n" ++
             "  \"family\": \"{s}\",\n" ++
             "  \"fixture_name\": \"{s}\",\n" ++
+            "  \"backend\": \"{s}\",\n" ++
+            "  \"dispatched_kernels\": {{\n" ++
+            "    \"matmul_f32\": {any},\n" ++
+            "    \"bias_add_f32\": {any},\n" ++
+            "    \"softmax_f32\": {any}\n" ++
+            "  }},\n" ++
             "  \"rows\": {d},\n" ++
             "  \"cols\": {d},\n" ++
             "  \"element_count\": {d},\n" ++
             "  \"pixel_sum\": {d},\n" ++
             "  \"non_zero_count\": {d},\n" ++
-            "  \"predicted_label\": {d}\n" ++
-            "}}\n",
+            "  \"predicted_label\": {d},\n",
         .{
             summary.family,
             summary.fixture_name,
+            summary.backend,
+            summary.dispatched_kernels.matmul_f32,
+            summary.dispatched_kernels.bias_add_f32,
+            summary.dispatched_kernels.softmax_f32,
             summary.rows,
             summary.cols,
             summary.element_count,
@@ -32,6 +43,31 @@ pub fn formatMnistSummary(
             summary.predicted_label,
         },
     );
+    try writeIntArray(&aw.writer, "logits_milli", i64, &summary.logits_milli);
+    try aw.writer.writeAll(",\n");
+    try writeIntArray(&aw.writer, "probabilities_milli", usize, &summary.probabilities_milli);
+    try aw.writer.print(
+        ",\n" ++
+            "  \"top_logit_milli\": {d},\n" ++
+            "  \"top_probability_milli\": {d}\n" ++
+            "}}\n",
+        .{ summary.top_logit_milli, summary.top_probability_milli },
+    );
+    return aw.toOwnedSlice();
+}
+
+fn writeIntArray(
+    writer: anytype,
+    field_name: []const u8,
+    comptime T: type,
+    values: []const T,
+) !void {
+    try writer.print("  \"{s}\": [", .{field_name});
+    for (values, 0..) |value, index| {
+        if (index != 0) try writer.writeAll(", ");
+        try writer.print("{d}", .{value});
+    }
+    try writer.writeByte(']');
 }
 
 pub fn formatLlmSummary(
@@ -52,6 +88,17 @@ pub fn formatLlmSummary(
         "{{\n" ++
             "  \"family\": \"{s}\",\n" ++
             "  \"fixture_name\": \"{s}\",\n" ++
+            "  \"backend\": \"{s}\",\n" ++
+            "  \"loader\": \"{s}\",\n" ++
+            "  \"model_name\": \"{s}\",\n" ++
+            "  \"model_architecture\": \"{s}\",\n" ++
+            "  \"model_vocab_size\": {d},\n" ++
+            "  \"model_context_length\": {d},\n" ++
+            "  \"weights_format\": \"{s}\",\n" ++
+            "  \"dispatched_kernels\": {{\n" ++
+            "    \"bias_add_f32\": {any},\n" ++
+            "    \"softmax_f32\": {any}\n" ++
+            "  }},\n" ++
             "  \"prompt_token_count\": {d},\n" ++
             "  \"prompt_sum\": {d},\n" ++
             "  \"logits_count\": {d},\n" ++
@@ -67,6 +114,15 @@ pub fn formatLlmSummary(
         .{
             summary.family,
             summary.fixture_name,
+            summary.backend,
+            summary.loader,
+            summary.model_name,
+            summary.model_architecture,
+            summary.model_vocab_size,
+            summary.model_context_length,
+            summary.weights_format,
+            summary.dispatched_kernels.bias_add_f32,
+            summary.dispatched_kernels.softmax_f32,
             summary.prompt_token_count,
             summary.prompt_sum,
             summary.logits_count,
@@ -167,6 +223,7 @@ pub fn formatLlmSummary(
             "  \"prompt_condition_bias_milli\": {d},\n" ++
             "  \"prompt_context_bias_milli\": {d},\n" ++
             "  \"conditioned_next_score_milli\": {d},\n" ++
+            "  \"conditioned_next_probability_milli\": {d},\n" ++
             "  \"model_next_score_milli\": {d},\n" ++
             "  \"prompt_context_next_score_milli\": {d},\n" ++
             "  \"model_condition_gap_milli\": {d},\n" ++
@@ -178,6 +235,7 @@ pub fn formatLlmSummary(
             summary.prompt_condition_bias_milli,
             prompt_context.context_bias_milli.?,
             conditioned.score_milli,
+            summary.conditioned_next_probability_milli,
             model.score_milli,
             prompt_context.score_milli,
             gains.conditioned_to_model_milli,

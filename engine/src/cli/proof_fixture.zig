@@ -43,11 +43,10 @@ fn debugLlmFixture(
     );
     defer runtime_assets.deinit(allocator);
 
-    var trace = try decoder.traceFixtureWithRuntime(
+    var trace = try decoder.traceFixtureWithRuntimeAssets(
         allocator,
         payload.value,
-        runtime_assets.assets.tokenizer,
-        runtime_assets.assets.weights,
+        runtime_assets.assets,
     );
     defer decoder.freeTrace(allocator, &trace);
 

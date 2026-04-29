@@ -1,6 +1,17 @@
 {
   "family": "llm",
   "fixture_name": "llm-smoke",
+  "backend": "metal",
+  "loader": "bolt-runtime-bundle-v1",
+  "model_name": "llm-smoke-decoder",
+  "model_architecture": "tiny-transition-decoder",
+  "model_vocab_size": 4,
+  "model_context_length": 8,
+  "weights_format": "binary-f32-le",
+  "dispatched_kernels": {
+    "bias_add_f32": true,
+    "softmax_f32": true
+  },
   "prompt_token_count": 3,
   "prompt_sum": 6,
   "logits_count": 4,
@@ -77,6 +88,7 @@
   "prompt_condition_bias_milli": 800,
   "prompt_context_bias_milli": 900,
   "conditioned_next_score_milli": 1000,
+  "conditioned_next_probability_milli": 343,
   "model_next_score_milli": 2300,
   "prompt_context_next_score_milli": 2400,
   "model_condition_gap_milli": 1300,

@@ -51,7 +51,7 @@ pub const FixtureManifest = struct {
         if (family != expected_family) {
             return error.UnexpectedFamily;
         }
-        if (family == .llm) {
+        if (family == .llm or family == .mnist) {
             const runtime_bundle_file = self.runtime_bundle_file orelse return error.MissingRuntimeBundleFile;
             if (runtime_bundle_file.len == 0) return error.EmptyRuntimeBundleFile;
         }

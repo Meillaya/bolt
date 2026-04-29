@@ -1,0 +1,8 @@
+{
+  "loader": "bolt-runtime-bundle-v1",
+  "model_name": "llm-smoke-decoder",
+  "architecture": "tiny-transition-decoder",
+  "vocab_size": 4,
+  "hidden_size": 4,
+  "context_length": 8
+}
