@@ -13,6 +13,9 @@ python3 ./python/scripts/generate_goldens.py --output-dir ./python/fixtures --fa
 (
   cd engine
   zig build
+  zig build test
+  zig build validate-assets
+  zig build validate-tokenizer
 )
 
 ./engine/zig-out/bin/proof_fixture run ./python/fixtures/mnist/manifest.json | tee "$artifact_run/mnist-summary.json" > "$artifact_latest/mnist-summary.json"

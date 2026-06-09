@@ -10,7 +10,16 @@ mkdir -p "$artifact_latest" "$artifact_run"
 (
   cd engine
   zig build
-)
+  zig build run-bonsai-golden
+  zig build run-bonsai-bench
+  zig build run-bonsai-q4-golden
+  zig build run-bonsai-q4-bench
+ )
+
+cp artifacts/nnzap-milestone8-bonsai-bench.json "$artifact_run/bonsai-bench.json"
+cp artifacts/nnzap-milestone7-q4-bench.json "$artifact_run/q4-bench.json"
+cp artifacts/nnzap-milestone8-bonsai-bench.json "$artifact_latest/bonsai-bench.json"
+cp artifacts/nnzap-milestone7-q4-bench.json "$artifact_latest/q4-bench.json"
 
 ./engine/zig-out/bin/benchmark_kernels \
   | tee "$artifact_run/kernel-bench.json" \
@@ -40,7 +49,9 @@ cat > "$artifact_run/manifest.json" <<MANIFEST
     "mnist_inference": "mnist-inference.json",
     "llm_inference": "llm-inference.json",
     "summary_json": "summary.json",
-    "summary_text": "summary.txt"
+    "summary_text": "summary.txt",
+    "bonsai_bench": "bonsai-bench.json",
+    "q4_bench": "q4-bench.json"
   },
   "correctness_gates": [
     "primitive_benchmark_status",

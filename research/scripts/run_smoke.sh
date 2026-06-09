@@ -18,3 +18,22 @@ echo "==> native llm"
 echo
 echo "==> compare"
 ./research/scripts/run_compare.sh
+
+
+echo
+
+echo "==> nnzap real build/example gates"
+(
+  cd engine
+  zig build validate-assets
+  zig build validate-tokenizer
+  zig build run
+  zig build run-1bit
+  zig build run-infer
+  zig build run-bonsai
+  zig build run-bonsai-golden
+  zig build run-bonsai-bench
+  zig build run-bonsai-q4-golden
+  zig build run-bonsai-q4-bench
+  zig build test
+)

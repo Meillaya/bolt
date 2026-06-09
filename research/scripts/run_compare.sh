@@ -13,6 +13,8 @@ python3 ./python/scripts/generate_goldens.py --output-dir "$tmpdir" >/dev/null
 (
   cd engine
   zig build
+  zig build validate-assets
+  zig build validate-tokenizer
 )
 
 ./engine/zig-out/bin/fixture_inspect "$tmpdir/mnist/manifest.json" | tee "$artifact_run/mnist-inspect.txt" > "$artifact_latest/mnist-inspect.txt"

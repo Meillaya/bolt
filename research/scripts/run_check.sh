@@ -17,6 +17,8 @@ cp "$doctor_tmp" "$doctor_dir_run/doctor.txt"
   cd engine
   zig build
   zig build test
+  zig build validate-assets
+  zig build validate-tokenizer
 )
 
 python3 ./tests/python/test_fixture_generation.py

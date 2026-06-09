@@ -24,6 +24,7 @@
 @interface BoltMetalBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
 @property(nonatomic, assign) NSUInteger elementCount;
+@property(nonatomic, assign) NSUInteger byteLength;
 @end
 
 @implementation BoltMetalBuffer
@@ -49,6 +50,21 @@ static BOOL bolt_validate_buffer_count(BoltMetalBuffer *buffer, size_t count, NS
         bolt_set_error(
             error_out,
             [NSString stringWithFormat:@"%@ Metal buffer too small for %zu elements", label, count]
+        );
+        return NO;
+    }
+    return YES;
+}
+
+static BOOL bolt_validate_buffer_bytes(BoltMetalBuffer *buffer, size_t byte_count, NSString *label, char **error_out) {
+    if (buffer == nil) {
+        bolt_set_error(error_out, [NSString stringWithFormat:@"missing %@ Metal buffer", label]);
+        return NO;
+    }
+    if (byte_count > buffer.byteLength) {
+        bolt_set_error(
+            error_out,
+            [NSString stringWithFormat:@"%@ Metal buffer too small for %zu bytes", label, byte_count]
         );
         return NO;
     }
@@ -227,6 +243,52 @@ bool bolt_metal_context_is_available(void) {
     }
 }
 
+bool bolt_metal_validate_dispatch_dimensions(
+    size_t grid_x,
+    size_t grid_y,
+    size_t grid_z,
+    size_t threads_x,
+    size_t threads_y,
+    size_t threads_z,
+    size_t max_threads_per_threadgroup,
+    char **error_out
+) {
+    if (grid_x == 0 || grid_y == 0 || grid_z == 0) {
+        bolt_set_error(error_out, @"Metal dispatch grid dimensions must be non-zero");
+        return false;
+    }
+    if (threads_x == 0 || threads_y == 0 || threads_z == 0) {
+        bolt_set_error(error_out, @"Metal threadgroup dimensions must be non-zero");
+        return false;
+    }
+    if (threads_x > SIZE_MAX / threads_y || threads_x * threads_y > SIZE_MAX / threads_z) {
+        bolt_set_error(error_out, @"Metal threadgroup dimensions overflow");
+        return false;
+    }
+    const size_t thread_count = threads_x * threads_y * threads_z;
+    if (thread_count > max_threads_per_threadgroup) {
+        bolt_set_error(error_out, @"Metal threadgroup dimensions exceed pipeline maximum");
+        return false;
+    }
+    return true;
+}
+
+bool bolt_metal_context_has_kernel(void *context_handle, const char *name, size_t name_len) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        if (runtime == nil || name == NULL || name_len == 0) {
+            return false;
+        }
+        NSString *kernel_name = [[NSString alloc] initWithBytes:name
+                                                         length:name_len
+                                                       encoding:NSUTF8StringEncoding];
+        if (kernel_name == nil) {
+            return false;
+        }
+        return [runtime.library newFunctionWithName:kernel_name] != nil;
+    }
+}
+
 void bolt_metal_string_destroy(char *message) {
     if (message != NULL) {
         free(message);
@@ -327,6 +389,36 @@ void *bolt_metal_buffer_create(void *context_handle, size_t count, char **error_
         BoltMetalBuffer *buffer = [[BoltMetalBuffer alloc] init];
         buffer.buffer = metal_buffer;
         buffer.elementCount = count;
+        buffer.byteLength = byte_count;
+        return (__bridge_retained void *)buffer;
+    }
+}
+
+void *bolt_metal_buffer_create_bytes(void *context_handle, size_t byte_count, char **error_out) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        if (runtime == nil) {
+            bolt_set_error(error_out, @"missing Metal runtime for byte-buffer creation");
+            return NULL;
+        }
+        if (byte_count == 0) {
+            bolt_set_error(error_out, @"cannot allocate a zero-length Metal byte buffer");
+            return NULL;
+        }
+
+        id<MTLBuffer> metal_buffer = [runtime.device newBufferWithLength:byte_count
+                                                                 options:MTLResourceStorageModeShared];
+        if (metal_buffer == nil) {
+            bolt_set_error(error_out, @"failed to allocate Metal shared byte buffer");
+            return NULL;
+        }
+
+        memset(metal_buffer.contents, 0, byte_count);
+
+        BoltMetalBuffer *buffer = [[BoltMetalBuffer alloc] init];
+        buffer.buffer = metal_buffer;
+        buffer.elementCount = byte_count / sizeof(float);
+        buffer.byteLength = byte_count;
         return (__bridge_retained void *)buffer;
     }
 }
@@ -345,6 +437,33 @@ float *bolt_metal_buffer_contents_f32(void *handle) {
             return NULL;
         }
         return (float *)buffer.buffer.contents;
+    }
+}
+
+uint8_t *bolt_metal_buffer_contents_u8(void *handle) {
+    @autoreleasepool {
+        BoltMetalBuffer *buffer = (__bridge BoltMetalBuffer *)handle;
+        if (buffer == nil) {
+            return NULL;
+        }
+        return (uint8_t *)buffer.buffer.contents;
+    }
+}
+
+size_t bolt_metal_buffer_byte_length(void *handle) {
+    @autoreleasepool {
+        BoltMetalBuffer *buffer = (__bridge BoltMetalBuffer *)handle;
+        if (buffer == nil) {
+            return 0;
+        }
+        return buffer.byteLength;
+    }
+}
+
+bool bolt_metal_buffer_validate_bytes(void *handle, size_t byte_count, char **error_out) {
+    @autoreleasepool {
+        BoltMetalBuffer *buffer = (__bridge BoltMetalBuffer *)handle;
+        return bolt_validate_buffer_bytes(buffer, byte_count, @"shared", error_out);
     }
 }
 
@@ -469,6 +588,192 @@ bool bolt_metal_matmul_buffer_f32(
 
         if (command_buffer.error != nil) {
             NSString *description = command_buffer.error.localizedDescription ?: @"Metal command buffer failed";
+            bolt_set_error(error_out, description);
+            return NO;
+        }
+
+        return YES;
+    }
+}
+
+typedef struct {
+    uint32_t M;
+    uint32_t K;
+    uint32_t group_size;
+} BoltMetalQMVDims;
+
+bool bolt_metal_qmv_buffer_f32(
+    void *context_handle,
+    void *packed_bits_handle,
+    void *scales_handle,
+    void *input_handle,
+    size_t rows,
+    size_t cols,
+    size_t group_size,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *packed_bits_buffer = (__bridge BoltMetalBuffer *)packed_bits_handle;
+        BoltMetalBuffer *scales_buffer = (__bridge BoltMetalBuffer *)scales_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        if (rows == 0 || cols == 0 || group_size == 0) {
+            bolt_set_error(error_out, @"invalid empty qmv dimensions");
+            return NO;
+        }
+        if (runtime == nil) {
+            bolt_set_error(error_out, @"missing Metal runtime");
+            return NO;
+        }
+        if (cols % group_size != 0 || cols % 32 != 0) {
+            bolt_set_error(error_out, @"qmv requires cols divisible by group_size and 32");
+            return NO;
+        }
+        if (!bolt_validate_u32(rows, @"qmv rows", error_out) ||
+            !bolt_validate_u32(cols, @"qmv cols", error_out) ||
+            !bolt_validate_u32(group_size, @"qmv group size", error_out)) {
+            return NO;
+        }
+        const size_t packed_bytes = rows * (cols / 8);
+        const size_t scale_count = rows * ((cols + group_size - 1) / group_size);
+        if (!bolt_validate_buffer_bytes(packed_bits_buffer, packed_bytes, @"qmv packed_bits", error_out) ||
+            !bolt_validate_buffer_bytes(scales_buffer, scale_count * sizeof(uint16_t), @"qmv scales", error_out) ||
+            !bolt_validate_buffer_count(input_buffer, cols, @"qmv input", error_out) ||
+            !bolt_validate_buffer_count(output_buffer, rows, @"qmv output", error_out)) {
+            return NO;
+        }
+
+        id<MTLComputePipelineState> pipeline = bolt_make_pipeline(runtime.device, runtime.library, @"qmv", error_out);
+        if (pipeline == nil) {
+            return NO;
+        }
+
+        id<MTLCommandBuffer> command_buffer = [runtime.commandQueue commandBuffer];
+        if (command_buffer == nil) {
+            bolt_set_error(error_out, @"failed to create Metal command buffer");
+            return NO;
+        }
+
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        if (encoder == nil) {
+            bolt_set_error(error_out, @"failed to create Metal compute encoder");
+            return NO;
+        }
+
+        const BoltMetalQMVDims dims = {
+            .M = (uint32_t)rows,
+            .K = (uint32_t)cols,
+            .group_size = (uint32_t)group_size,
+        };
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:packed_bits_buffer.buffer offset:0 atIndex:0];
+        [encoder setBuffer:scales_buffer.buffer offset:0 atIndex:1];
+        [encoder setBuffer:input_buffer.buffer offset:0 atIndex:2];
+        [encoder setBuffer:output_buffer.buffer offset:0 atIndex:3];
+        [encoder setBytes:&dims length:sizeof(dims) atIndex:4];
+        [encoder dispatchThreadgroups:MTLSizeMake((rows + 1) / 2, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        [encoder endEncoding];
+
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.error != nil) {
+            NSString *description = command_buffer.error.localizedDescription ?: @"Metal qmv command buffer failed";
+            bolt_set_error(error_out, description);
+            return NO;
+        }
+
+        return YES;
+    }
+}
+
+bool bolt_metal_q4mv_buffer_f32(
+    void *context_handle,
+    void *packed_nibbles_handle,
+    void *scales_handle,
+    void *biases_handle,
+    void *input_handle,
+    size_t rows,
+    size_t cols,
+    size_t group_size,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *packed_buffer = (__bridge BoltMetalBuffer *)packed_nibbles_handle;
+        BoltMetalBuffer *scales_buffer = (__bridge BoltMetalBuffer *)scales_handle;
+        BoltMetalBuffer *biases_buffer = (__bridge BoltMetalBuffer *)biases_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        if (rows == 0 || cols == 0 || group_size == 0) {
+            bolt_set_error(error_out, @"invalid empty q4mv dimensions");
+            return NO;
+        }
+        if (runtime == nil) {
+            bolt_set_error(error_out, @"missing Metal runtime");
+            return NO;
+        }
+        if (cols % group_size != 0 || cols % 2 != 0) {
+            bolt_set_error(error_out, @"q4mv requires cols divisible by group_size and 2");
+            return NO;
+        }
+        if (!bolt_validate_u32(rows, @"q4mv rows", error_out) ||
+            !bolt_validate_u32(cols, @"q4mv cols", error_out) ||
+            !bolt_validate_u32(group_size, @"q4mv group size", error_out)) {
+            return NO;
+        }
+        const size_t packed_bytes = rows * (cols / 2);
+        const size_t group_count = rows * (cols / group_size);
+        if (!bolt_validate_buffer_bytes(packed_buffer, packed_bytes, @"q4mv packed_nibbles", error_out) ||
+            !bolt_validate_buffer_bytes(scales_buffer, group_count * sizeof(uint16_t), @"q4mv scales", error_out) ||
+            !bolt_validate_buffer_bytes(biases_buffer, group_count * sizeof(uint16_t), @"q4mv biases", error_out) ||
+            !bolt_validate_buffer_count(input_buffer, cols, @"q4mv input", error_out) ||
+            !bolt_validate_buffer_count(output_buffer, rows, @"q4mv output", error_out)) {
+            return NO;
+        }
+
+        id<MTLComputePipelineState> pipeline = bolt_make_pipeline(runtime.device, runtime.library, @"q4mv_f32", error_out);
+        if (pipeline == nil) {
+            return NO;
+        }
+
+        id<MTLCommandBuffer> command_buffer = [runtime.commandQueue commandBuffer];
+        if (command_buffer == nil) {
+            bolt_set_error(error_out, @"failed to create Metal command buffer");
+            return NO;
+        }
+
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        if (encoder == nil) {
+            bolt_set_error(error_out, @"failed to create Metal compute encoder");
+            return NO;
+        }
+
+        const BoltMetalQMVDims dims = {
+            .M = (uint32_t)rows,
+            .K = (uint32_t)cols,
+            .group_size = (uint32_t)group_size,
+        };
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:packed_buffer.buffer offset:0 atIndex:0];
+        [encoder setBuffer:scales_buffer.buffer offset:0 atIndex:1];
+        [encoder setBuffer:biases_buffer.buffer offset:0 atIndex:2];
+        [encoder setBuffer:input_buffer.buffer offset:0 atIndex:3];
+        [encoder setBuffer:output_buffer.buffer offset:0 atIndex:4];
+        [encoder setBytes:&dims length:sizeof(dims) atIndex:5];
+        const NSUInteger thread_width = MAX((NSUInteger)1, MIN((NSUInteger)rows, pipeline.maxTotalThreadsPerThreadgroup));
+        [encoder dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(thread_width, 1, 1)];
+        [encoder endEncoding];
+
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.error != nil) {
+            NSString *description = command_buffer.error.localizedDescription ?: @"Metal q4mv command buffer failed";
             bolt_set_error(error_out, description);
             return NO;
         }

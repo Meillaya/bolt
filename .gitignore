@@ -4,3 +4,10 @@ reference/
 artifacts/**
 !artifacts/**/
 !artifacts/**/.gitkeep
+artifacts/assets/
+# Real datasets/models are local final-gate assets.
+data/
+
+# Python local caches
+__pycache__/
+*.py[cod]
