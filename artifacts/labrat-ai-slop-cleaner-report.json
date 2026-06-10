@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "goal_id": "G008-resolve-final-labrat-phase-2-review",
+  "status": "passed",
+  "generated_at": "2026-06-10T00:44:09.153757+00:00",
+  "scope": "changed Labrat Phase 2 files and final review-blocker artifacts",
+  "result": "review-blocker fixes remove static readiness claims, optimistic shell success, stale hashes, and narrow redaction while preserving existing nnmetal interfaces",
+  "checks": [
+    "removed stale known-bug comments after parser fixes",
+    "agent paths now execute deterministic offline parser/dispatcher/copy/rollback scenarios",
+    "nonzero/timeout/spawn shell failures no longer report success",
+    "M5 sandbox/rollback evidence is backed by temp-file mutation and restore",
+    "copy-file is included in docs/help/API mapping and offline agent scenarios",
+    "file hashes and test counts regenerated after final fixes"
+  ]
+}

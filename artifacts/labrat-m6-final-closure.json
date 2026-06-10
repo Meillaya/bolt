@@ -1,0 +1,61 @@
+{
+  "schema_version": 3,
+  "goal_id": "G008-resolve-final-labrat-phase-2-review",
+  "status": "pass",
+  "generated_at": "2026-06-10T00:44:09.153757+00:00",
+  "resolved_review_blockers": [
+    "redaction covers Authorization/Bearer/Cookie plus apiKey/x_api_key/x-api-key/access_token-like JSON fields",
+    "no arbitrary -f cleanup deletion",
+    "symlink component rejection before read/write/copy/snapshot paths",
+    "bounded subprocess runner for allowlisted build/test/bench/run-cmd shell operations",
+    "run-cmd and experiment shell failures emit status=error and exit nonzero",
+    "function extraction ignores braces in line comments, block comments across lines, strings, and char literals",
+    "copy-file documented in help/inventory/API mapping and exercised by offline agents",
+    "agent CLIs execute deterministic offline parser/dispatcher/copy/rollback scenarios",
+    "offline M5 artifacts include temp-sandbox rollback evidence instead of static readiness claims",
+    "experiment-start/finish history is failure-aware"
+  ],
+  "verification_matrix": [
+    "cd labrat && zig build test --summary all (pass; 170/170 tests)",
+    "cd labrat && zig build api-offline-test --summary all (pass; 7/7 tests)",
+    "cd labrat && zig build mnist-agent --summary all (pass; offline scenario artifact plus live blocked artifact)",
+    "cd labrat && zig build bonsai-agent --summary all (pass; offline scenario artifact plus live blocked artifact)",
+    "cd labrat && zig build bonsai-q4-agent --summary all (pass; offline scenario artifact plus live blocked artifact)",
+    "cd labrat && zig build mnist-researcher --summary all (pass; real MNIST gates)",
+    "cd labrat && zig build bonsai-researcher --summary all (pass; real Bonsai F16 gates)",
+    "cd labrat && zig build bonsai-q4-researcher --summary all (pass; real Bonsai Q4 gates)",
+    "cd engine && zig build test --summary all (pass; 96/96 tests; existing Metal unused-variable warnings only)",
+    "git diff --check (pass)",
+    "secret scan over labrat/src/*.zig and docs/labrat-parity-inventory.md (pass)"
+  ],
+  "artifacts": [
+    "artifacts/labrat-m2-toolbox-tests.json",
+    "artifacts/labrat-m4-offline-api-agent-core.json",
+    "artifacts/labrat-m5-agent-cli-readiness.json",
+    "artifacts/labrat-m5-mnist-agent.json",
+    "artifacts/labrat-m5-bonsai-agent.json",
+    "artifacts/labrat-m5-bonsai-q4-agent.json",
+    "artifacts/blockers/labrat-m5-mnist-agent-live-blocked.json",
+    "artifacts/blockers/labrat-m5-bonsai-agent-live-blocked.json",
+    "artifacts/blockers/labrat-m5-bonsai-q4-agent-live-blocked.json",
+    "artifacts/labrat-ai-slop-cleaner-report.json"
+  ],
+  "file_sha256": {
+    "labrat/build.zig": "e755d68f6f891572ef05ce0d0a7f5101608fd7c9765e81e376055f3148660d33",
+    "labrat/build.zig.zon": "58a07340323261d6008dad47e5cda9addfb5fb03c66957afe7b116db738a3c62",
+    "labrat/src/tools.zig": "6c46fa2794ce5516cd06edd57126ec7e5808aa2254b8924c0ba4eb3ca50c89f7",
+    "labrat/src/toolbox.zig": "8b034d5cbbfdebd409c0e5fbe576ca1980d558a02eb422c6f71baf4f3c8165c5",
+    "labrat/src/tools_test.zig": "8490a67daedecc932126386f1e4d3004b934f17dd1ee009ac97a7596c9ca6fa6",
+    "labrat/src/toolbox_test.zig": "572984df5e68e8b2b370000305c64514eb6592e7c02a6001b0cf5626ec8c210d",
+    "labrat/src/api_client.zig": "da2a6472f18e9cd16560967fbe0c69de12f07070c00c587b1f561b7444079e50",
+    "labrat/src/agent_core.zig": "34ad4b6c2877e20fb9597ceef36ae2d33099687f5290363ac366a1e5a1a679b8",
+    "labrat/src/agent_cli_core.zig": "43cc1116ef8d3aca981e2f420a3d8a1bde25562114bba677a81a2a9f14d75dcc",
+    "labrat/src/mnist_agent.zig": "590be30ac6e3135892c93facae7b99c529f0d1a669b732070e4bfa99c6efae9d",
+    "labrat/src/bonsai_agent.zig": "ce34b01845edbb69dfe0aacacfc0a2c80c0d3d104b93b3bcfb6d4d2bebfc7a40",
+    "labrat/src/bonsai_q4_agent.zig": "397581c532c65c5740784ae19200c58216811fe62986cdcf942d3e6aacf3b0eb",
+    "labrat/programs/mnist_system.md": "d42edff57124b9a2fe97cf3127d8e43da32686f6affccfbde46bea593994bfcd",
+    "labrat/programs/bonsai_system.md": "72540786982a0da03148c9c5ad88cb05e5ebff300218bc42dbc523cf01a62eaa",
+    "labrat/programs/q4_system.md": "cd1149278614c4ddfb140b15504a96964d33fa520a3610b79a3b953e2d562b64",
+    "docs/labrat-parity-inventory.md": "3e26eb541641f52c361224a0934c8ab32d833501011bea1b489fdd6db552c89b"
+  }
+}
