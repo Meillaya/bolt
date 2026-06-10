@@ -1955,6 +1955,7 @@ fn isAllowedRunCommand(command: []const u8) bool {
         "zig build run",
         "zig build run-1bit",
         "zig build run-infer",
+        "zig build run-metal-mlp",
         "zig build run-bonsai-golden",
         "zig build run-bonsai-bench",
         "zig build run-bonsai-q4-golden",
@@ -3566,6 +3567,7 @@ test "labrat sandbox denies protected roots" {
 
 test "labrat run-cmd accepts only stable argv commands" {
     try std.testing.expect(isAllowedRunCommand("zig build test"));
+    try std.testing.expect(isAllowedRunCommand("zig build run-metal-mlp"));
     try std.testing.expect(isAllowedRunCommand("zig build run-bonsai-q4-bench -Doptimize=ReleaseFast"));
     try std.testing.expect(!isAllowedRunCommand("zig build test; rm -rf ."));
     try std.testing.expect(!isAllowedRunCommand("rm -rf engine"));
