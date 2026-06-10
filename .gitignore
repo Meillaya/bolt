@@ -11,3 +11,8 @@ data/
 # Python local caches
 __pycache__/
 *.py[cod]
+
+# Zig build outputs
+zig-cache/
+.zig-cache/
+zig-out/

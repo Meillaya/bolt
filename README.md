@@ -1,175 +1,187 @@
-# bolt
+# bolt — Apple-Silicon nnmetal + Labrat parity port
 
-macOS-first Zig + Metal engine workbench with Python reference validation.
+`bolt` is the production-ready local parity port of the reference `nnzap`
+project. It combines a Zig + Metal inference engine with a sandboxed Labrat
+agent harness so model/research gates can run locally, deterministically, and
+with auditable evidence.
 
-## Current status
+The approved `local-reference-nnzap` scope is complete. Live LLM-provider
+execution is intentionally not part of the final gate: it remains disabled by
+default and requires explicit credentials plus opt-in.
 
-This repo is now past the initial bootstrap/proof milestones and has landed its first real Metal vertical slice on top of the deterministic v1 proof surface.
+## Status and evidence
 
-The approved v1 direction is:
-- one shared native runtime
-- one small decoder-only LLM path
-- one compact non-LLM path
-- Python goldens/reference checks before benchmark work
-- current milestone state: shared runtime + Phase 2 primitive kernels + real MNIST GPU inference + small decoder-only LLM proof are implemented and green
-- current native slice state:
-  - committed Metal shader source in `engine/src/metal/kernels.metal`
-  - Objective-C Metal bridge in `engine/src/metal/bridge.m`
-  - Zig Metal runtime wrapper in `engine/src/metal/context.zig`
-  - tensor buffer abstraction in `engine/src/tensor/buffer.zig`
-  - Phase 1 shared-buffer runtime foundation is now landed: Metal-backed tensors keep CPU-visible shared storage and only materialize host-owned copies on demand
-  - Phase 2 primitive baseline is now landed: matrix multiply, bias add, ReLU, reduce-sum, and softmax kernels have correctness tests and benchmark artifacts
-  - Phase 3 MNIST inference now uses a runtime bundle plus Metal `matmul_f32` → `bias_add_f32` → `softmax_f32`
-  - decoder proof path now loads explicit model metadata and uses Metal-backed `bias_add_f32` + `softmax_f32` for the conditioned route
+Final parity closure passed with independent review:
 
-## Toolchain
+```text
+code-reviewer: APPROVE
+architect:     CLEAR
+```
 
-Verify the local setup with:
+Key evidence:
+
+- `artifacts/labrat-final-quality-gate.json`
+- `artifacts/labrat-m6-final-closure.json`
+- `artifacts/labrat-ai-slop-cleaner-report.json`
+- `artifacts/nnzap-milestone9-labrat-readiness.json`
+- `.omx/ultragoal/ledger.jsonl` for durable audit history
+
+Historical note: the ledger retains an earlier `G007 review_blocked` record for
+traceability. That blocker was resolved by `G008`; the aggregate parity goal is
+complete.
+
+## Repository layout
+
+```text
+engine/      Zig + Metal runtime, kernels, model loaders, proof gates, benches
+labrat/      Researcher gates, toolbox, API-shaped agent core, domain agents
+python/      Reference scripts and golden-fixture tooling
+research/    Local check/compare/bench/proof scripts and replayable recipes
+docs/        Architecture notes, parity contracts, inventories, runbooks
+artifacts/   Generated acceptance, benchmark, blocker, and closure evidence
+reference/   Local source/reference project (`reference/nnzap`)
+tests/       Supplemental test assets
+```
+
+## Quick start
+
+### Verify the native engine
 
 ```bash
-./research/scripts/doctor.sh
+cd engine
+zig build test --summary all
 ```
 
-See:
+Accepted final gate: `96/96` engine tests passed.
 
-```text
-docs/toolchain-mac.md
-docs/development.md
-docs/architecture.md
-```
-
-## Current smoke commands
+### Verify Labrat
 
 ```bash
-./research/scripts/run_check.sh
-./research/scripts/run_smoke.sh
-./research/scripts/run_compare.sh
-./research/scripts/run_bench.sh
-./research/scripts/run_proof.sh
-./research/scripts/run_debug.sh
-./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
-cd engine && zig build
-./engine/zig-out/bin/proof_fixture run python/fixtures/mnist/manifest.json
-./engine/zig-out/bin/proof_fixture check python/fixtures/mnist/manifest.json
-./engine/zig-out/bin/proof_fixture debug python/fixtures/mnist/manifest.json
-./engine/zig-out/bin/proof_fixture run python/fixtures/llm/manifest.json
-./engine/zig-out/bin/proof_fixture check python/fixtures/llm/manifest.json
-./engine/zig-out/bin/proof_fixture debug python/fixtures/llm/manifest.json 3
+cd labrat
+zig build test --summary all
+zig build api-offline-test --summary all
 ```
 
-## Current LLM asset contract
+Accepted final gates: `170/170` Labrat tests passed and `7/7` offline API / agent-core tests passed.
 
-The decoder proof path currently uses:
-
-```text
-manifest.json -> runtime bundle JSON -> model JSON + tokenizer JSON + weights BIN
-```
-
-The current `weights.bin` is a tiny little-endian float32 bundle with:
-- output projection values
-- prompt-tail-conditioned transition bias values
-
-The current model JSON is deliberately tiny metadata (`loader`, `model_name`, `architecture`, vocab/hidden/context sizes) so native LLM runs can report which runtime bundle was loaded. `run_llm_fixture`, `trace_llm_fixture`, and `proof_fixture run` now report backend, loader/model metadata, weights format, dispatched decoder kernels, and the conditioned-route probability.
-Deferred formats such as safetensors are intentionally rejected in v1 with deterministic `UnsupportedWeightsFormat` evidence rather than silent compatibility stubs.
-
-Inspect the resolved contract with:
+### Run offline agent gates
 
 ```bash
-./engine/zig-out/bin/fixture_inspect ./python/fixtures/llm/manifest.json
-./engine/zig-out/bin/dump_llm_runtime ./python/fixtures/llm/manifest.json
-./engine/zig-out/bin/trace_llm_fixture ./python/fixtures/llm/manifest.json
-./engine/zig-out/bin/decode_llm_fixture ./python/fixtures/llm/manifest.json 3
-./engine/zig-out/bin/proof_fixture debug ./python/fixtures/mnist/manifest.json
-./engine/zig-out/bin/proof_fixture debug ./python/fixtures/llm/manifest.json 3
+cd labrat
+zig build mnist-agent
+zig build bonsai-agent
+zig build bonsai-q4-agent
 ```
 
-This keeps the local proof flow deterministic while moving one step closer to a more realistic asset layout.
-
-The current multi-step decoder rollout now uses an internal score surface derived from the runtime weights bundle rather than replaying fixture logits for every generated step.
-The debug/trace path now exposes both:
-- fixture-logit-conditioned next-token scoring
-- internal model-score next-token routing
-- full-prompt context routing for the first decode step and summary/debug comparison
-- explicit divergence markers in the run summary showing whether conditioning flipped the raw winner and how far the internal model score moved from the conditioned score
-- internal prompt-context bias totals, so full-prompt routing is visible as projection + accumulated context bias
-
-The rollout now keeps a growing decode context:
-- step 0 uses the original prompt token list
-- later steps use prompt + generated tokens
-- each decode step now reports `projection_milli` and `context_bias_milli` so the internal score decomposition is visible
-
-The run summary now treats `generated_last_token` as the internal prompt-context preview token rather than the raw fixture-logit winner.
-That summary preview now also exposes:
-- `raw_next_score_milli`
-- `generated_projection_milli`
-- `generated_context_bias_milli`
-
-The unified debug trace now also exposes top-level score comparisons for:
-- raw top logit
-- conditioned top score
-- model top score
-- prompt-context top score
-- route-to-route gain values between those winners
-- an explicit preferred internal route marker
-
-It now also includes a structured `route_comparison` object that groups:
-- raw
-- conditioned
-- model
-- prompt-context
-- preferred
-- gains
-
-## Project layout
+These execute deterministic offline scenarios plus credential-safe live-block
+checks. They produce artifacts such as:
 
 ```text
-engine/           Zig + Metal native core
-python/           reference scripts and golden-fixture tooling
-research/         deterministic local run/check/compare/bench scripts
-research/recipes/ replayable local-only experiment recipes
-docs/             architecture and development notes
-reference/        local source/reference project
+artifacts/labrat-m5-mnist-agent.json
+artifacts/labrat-m5-bonsai-agent.json
+artifacts/labrat-m5-bonsai-q4-agent.json
+artifacts/blockers/labrat-m5-*-live-blocked.json
 ```
 
-## Local experiment loop
-
-The v1 automation surface is intentionally offline/local. A recipe is a versioned JSON file with an allowlisted command list and evaluation requirements:
+### Run researcher gates
 
 ```bash
-./research/scripts/run_experiment_recipe.sh ./research/recipes/smoke-local.json
+cd labrat
+zig build mnist-researcher
+zig build bonsai-researcher
+zig build bonsai-q4-researcher
 ```
 
-The smoke recipe runs compare, benchmark, and proof gates, then writes:
+These wrap stable `engine/` commands and emit timestamped JSON evidence for the
+MNIST, Bonsai F16, and Bonsai Q4 parity surfaces.
+
+## Engine scope
+
+`engine/` is the nnmetal-style runtime and model-gate layer:
+
+- Apple-Silicon Metal shared-buffer runtime
+- committed Metal shader library
+- matmul, bias, activation, reduction, softmax, QMV/Q4MV paths
+- MNIST training/inference proof surface
+- Bonsai/Qwen tokenizer, loader, golden, and benchmark gates
+- benchmark and proof artifacts under `artifacts/`
+
+Detailed references:
+
+- `docs/architecture.md`
+- `docs/development.md`
+- `docs/nnzap-build-command-mapping.md`
+- `docs/nnzap-interface-contracts.md`
+- `docs/nnzap-real-asset-checklist.md`
+
+## Labrat scope
+
+`labrat/` is the autonomous experiment harness around the engine:
+
+- researcher commands for MNIST, Bonsai F16, and Bonsai Q4
+- sandboxed file/read/write/copy/edit/build/test/bench toolbox
+- snapshot and rollback evidence for mutating tools
+- bounded subprocess execution and failure propagation
+- API-shaped request/response parsing with deterministic offline mocks
+- credential-safe live-provider blocking by default
+- domain CLIs: `mnist-agent`, `bonsai-agent`, `bonsai-q4-agent`
+
+For the full sandbox contract and module inventory, see
+`docs/labrat-parity-inventory.md`.
+
+## Live API policy
+
+Live provider execution is opt-in only. Normal verification uses offline mocks
+and a blocked-live gate.
+
+```bash
+cd labrat
+export LABRAT_LIVE=1
+export ANTHROPIC_API_KEY=...
+./zig-out/bin/bonsai_agent
+```
+
+Do not commit live credentials, raw provider transcripts, or local data/model
+assets. Secret-like fields are redacted from generated blocked-live artifacts.
+
+## Data and model assets
+
+Real datasets and model files are local final-gate assets and are intentionally
+ignored by Git. Keep them under the documented local asset paths and preserve the
+accepted artifact evidence.
+
+Useful docs:
+
+- `docs/nnzap-real-asset-checklist.md`
+- `docs/reference-gap-closure-v1-completion.md`
+- `artifacts/assets/nnzap-parity/asset-manifest.json`
+
+## Final verification summary
+
+The accepted Labrat Phase 2 closure recorded:
 
 ```text
-artifacts/experiments/<timestamp>-smoke-local/recipe.json
-artifacts/experiments/<timestamp>-smoke-local/report.json
-artifacts/experiments/<timestamp>-smoke-local/report.md
-artifacts/experiments/latest/...
+cd labrat && zig build test --summary all              # pass; 170/170
+cd labrat && zig build api-offline-test --summary all  # pass; 7/7
+cd labrat && zig build mnist-agent                     # pass
+cd labrat && zig build bonsai-agent                    # pass
+cd labrat && zig build bonsai-q4-agent                 # pass
+cd labrat && zig build mnist-researcher                # pass; real MNIST
+cd labrat && zig build bonsai-researcher               # pass; real Bonsai F16
+cd labrat && zig build bonsai-q4-researcher            # pass; real Bonsai Q4
+cd engine && zig build test --summary all              # pass; 96/96
+git diff --check                                       # pass
+credential scan                                        # pass
 ```
 
-`report.json` includes the commands executed, exit codes, captured artifact paths, benchmark correctness gates consumed from `artifacts/bench/latest/summary.json`, and a stable control-flow fingerprint for replay comparison. Recipes cannot call arbitrary shell commands; v1 only allows local repo scripts and does not permit external services.
+## Documentation map
 
-## Current first Metal vertical slice
+- `docs/architecture.md` — engine/runtime architecture
+- `docs/development.md` — local development workflow
+- `docs/labrat-parity-inventory.md` — Labrat module and sandbox inventory
+- `docs/nnzap-build-command-mapping.md` — stable build/test command contracts
+- `docs/nnzap-interface-contracts.md` — parity interface contracts
+- `docs/reference-gap-closure-v1-completion.md` — reference-gap closure summary
+- `.omx/plans/prometheus-strict/` — execution plans and test specs
 
-The repo now contains real committed Metal code rather than only toolchain checks:
-
-- `engine/src/metal/kernels.metal` — `copy_f32` and `add_f32`
-- `engine/src/metal/kernels.metal` — `copy_f32`, `add_f32`, `matmul_f32`, `bias_add_f32`, `relu_f32`, `reduce_sum_f32`, and `softmax_f32`
-- `engine/src/metal/bridge.m` — Objective-C bridge that compiles the embedded MSL source and dispatches compute kernels
-- `engine/src/metal/context.zig` — Zig wrapper for context init, shared-buffer allocation, explicit materialization, vector ops, and primitive NN kernels
-- `engine/src/tensor/buffer.zig` — owned tensor/buffer abstraction used by the proof paths
-
-The current Phase 1 substrate change is that Metal-backed tensors now keep their values in CPU-visible shared Metal buffers instead of forcing a fresh host output allocation for every dispatch. Host copies still exist, but only when a caller explicitly materializes one for compatibility or artifact reporting.
-
-The current Phase 2 addition keeps that substrate small but broadens the kernel surface enough for the next real-model phases. The Phase 3 MNIST path now consumes that surface through a deterministic dense-classifier runtime bundle:
-
-```text
-python/fixtures/mnist/manifest.json
-  -> mnist-smoke.runtime.json
-       -> mnist-smoke.weights.bin
-```
-
-`run_mnist_fixture` now reports `backend`, dispatched kernel evidence, logits in milli-units, probability milli-units, and the predicted label. `./research/scripts/run_bench.sh` emits timestamped primitive benchmark reports plus an MNIST inference artifact under `artifacts/bench/` after compare/reference checks pass.
-
-This is still a deliberately small slice: it proves shader compilation, shared-buffer allocation, dispatch, real MNIST GPU inference, the first decoder-side Metal operation, and a reusable primitive-kernel baseline without breaking golden checks.
+Reference point: `reference/nnzap/README.md`.
