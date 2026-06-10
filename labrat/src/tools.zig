@@ -7,8 +7,7 @@
 //!
 //! Design: functions accept already-resolved filesystem
 //! paths.  Callers use `resolveToFs` when they need to
-//! translate monorepo-relative paths to zap/-relative
-//! filesystem paths.
+//! translate repository-relative paths to local filesystem paths.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

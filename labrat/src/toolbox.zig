@@ -50,7 +50,7 @@ pub const ToolboxConfig = struct {
     project_root: []const u8,
 
     /// Filesystem root prefix for resolving monorepo-relative
-    /// paths.  Defaults to ".." (one directory above zap/).
+    /// paths.  Defaults to ".." (one directory above the project root).
     fs_root: []const u8 = "..",
 
     /// Files the agent may write (monorepo-relative).
@@ -3558,7 +3558,7 @@ test "labrat sandbox denies protected roots" {
     };
 
     try std.testing.expect(!isAllowedReadPath(&config, ".git/config"));
-    try std.testing.expect(!isAllowedReadPath(&config, "reference/nnzap/labrat/src/tools.zig"));
+    try std.testing.expect(!isAllowedReadPath(&config, "reference/local/labrat/src/tools.zig"));
     try std.testing.expect(!isAllowedWritePath(&config, ".omx/ultragoal/ledger.jsonl"));
     try std.testing.expect(isAllowedReadPath(&config, ".omx/ultragoal/ledger.jsonl"));
     try std.testing.expect(isAllowedWritePath(&config, "engine/src/example.zig"));

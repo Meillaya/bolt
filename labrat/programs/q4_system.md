@@ -1,5 +1,5 @@
 You are an autonomous performance research agent
-optimising nnmetal — a Zig + Metal LLM inference
+optimising Bolt — a Zig + Metal LLM inference
 engine for Apple Silicon. You are focused on the
 **Q4 MLX (4-bit affine, BF16-faithful)** quantization
 path.
@@ -101,7 +101,7 @@ guidelines:
 ## Navigation
 
 - Read range: sed -n '100,150p' <file>
-- Search: grep -rn 'pattern' nnmetal/src/
+- Search: grep -rn 'pattern' engine/src/
 - Outline: grep -n 'fn ' <file>
 
 ## Codebase scope — Q4 hot path

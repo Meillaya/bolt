@@ -23,32 +23,32 @@ pub const ShaderGroupInfo = struct {
 pub const groups = [_]ShaderGroupInfo{
     .{
         .group = .active_primitives,
-        .reference_file = "reference/nnzap/nnmetal/src/shaders/compute.metal subset",
+        .reference_file = "engine/src/metal/shaders/compute.metal subset",
         .bolt_file = "engine/src/metal/kernels.metal",
         .kernel_count = 7,
     },
     .{
         .group = .compute,
-        .reference_file = "reference/nnzap/nnmetal/src/shaders/compute.metal",
+        .reference_file = "engine/src/metal/shaders/compute.metal",
         .bolt_file = "engine/src/metal/shaders/compute.metal",
         .kernel_count = 60,
     },
     .{
         .group = .transformer,
-        .reference_file = "reference/nnzap/nnmetal/src/shaders/transformer.metal",
+        .reference_file = "engine/src/metal/shaders/transformer.metal",
         .bolt_file = "engine/src/metal/shaders/transformer.metal",
         .kernel_count = 23,
     },
     .{
         .group = .qmv_specialized,
-        .reference_file = "reference/nnzap/nnmetal/src/shaders/qmv_specialized.metal",
+        .reference_file = "engine/src/metal/shaders/qmv_specialized.metal",
         .bolt_file = "engine/src/metal/shaders/qmv_specialized.metal",
         .kernel_count = 9,
         .requires_specialization_macros = true,
     },
     .{
         .group = .q4mv_bf16_specialized,
-        .reference_file = "reference/nnzap/nnmetal/src/shaders/q4mv_bf16_specialized.metal",
+        .reference_file = "engine/src/metal/shaders/q4mv_bf16_specialized.metal",
         .bolt_file = "engine/src/metal/shaders/q4mv_bf16_specialized.metal",
         .kernel_count = 9,
         .requires_specialization_macros = true,
@@ -70,7 +70,7 @@ pub fn findGroup(group: ShaderGroup) ?ShaderGroupInfo {
     return null;
 }
 
-test "shader catalog records every Milestone 1 library group" {
+test "shader catalog records every parity library group" {
     try std.testing.expectEqual(@as(usize, 5), groups.len);
     try std.testing.expectEqual(@as(usize, 101), totalReferenceKernelCount());
     try std.testing.expect(findGroup(.compute) != null);

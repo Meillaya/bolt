@@ -224,6 +224,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const researcher_core_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/researcher_core.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+
     const api_offline_step = b.step("api-offline-test", "Run Labrat offline API and agent-core tests");
     api_offline_step.dependOn(&b.addRunArtifact(api_client_tests).step);
     api_offline_step.dependOn(&b.addRunArtifact(agent_core_tests).step);
@@ -234,4 +243,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(toolbox_extra_tests).step);
     test_step.dependOn(&b.addRunArtifact(api_client_tests).step);
     test_step.dependOn(&b.addRunArtifact(agent_core_tests).step);
+    test_step.dependOn(&b.addRunArtifact(researcher_core_tests).step);
 }

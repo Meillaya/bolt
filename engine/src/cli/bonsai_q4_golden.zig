@@ -1,8 +1,9 @@
 const std = @import("std");
 const bolt = @import("bolt");
+const asset_paths = @import("asset_paths.zig");
 
-const default_manifest_path = "../artifacts/assets/nnzap-parity/asset-manifest.json";
-const artifact_path = "../artifacts/nnzap-milestone7-q4-golden.json";
+const default_manifest_path = "../artifacts/assets/bolt-parity/asset-manifest.json";
+const artifact_path = "../artifacts/bolt-q4-golden.json";
 const golden_prompt = "The capital of France is";
 const hidden_size: usize = 2048;
 const intermediate_size: usize = 6144;
@@ -30,6 +31,50 @@ const GenerationProbe = struct {
     metal_projection_dispatches: u32,
     metal_logits_dispatches: u32,
 };
+
+fn readRequiredFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, label: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(16 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing {s}: {s}\nRun this command from engine/ after preparing real assets, or pass an explicit manifest path when this command accepts one.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+}
+
+fn readReferencedAssetFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, label: []const u8, max_bytes: usize) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_bytes)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing referenced {s}: {s}\nPrepare the real Q4 asset listed in the manifest, or update the manifest before rerunning run-bonsai-q4-golden.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+}
+
+fn requireReferencedAssetFile(io: std.Io, path: []const u8, label: []const u8) !void {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing referenced {s}: {s}\nPrepare the real Q4 asset listed in the manifest, or update the manifest before rerunning run-bonsai-q4-golden.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+    if (stat.kind != .file) {
+        std.debug.print("referenced {s} is not a file: {s}\nUpdate the manifest to point at the prepared real asset before rerunning run-bonsai-q4-golden.\n", .{ label, path });
+        return error.MissingRequiredFile;
+    }
+}
+
+fn missingAssetEntry(asset_id: []const u8) error{MissingRequiredFile} {
+    std.debug.print("asset manifest is missing required asset entry: {s}\nPrepare the real asset files and add this asset entry to the manifest before rerunning run-bonsai-q4-golden.\n", .{asset_id});
+    return error.MissingRequiredFile;
+}
+
+fn missingManifestEntry(asset_id: []const u8, expected_file: []const u8) error{MissingRequiredFile} {
+    std.debug.print("asset manifest entry {s} is missing required file path for {s}\nAdd that file entry after preparing real Q4 assets, then rerun run-bonsai-q4-golden.\n", .{ asset_id, expected_file });
+    return error.MissingRequiredFile;
+}
 
 const MetalQ4Probe = struct {
     available: bool,
@@ -106,11 +151,13 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
     const manifest_path = if (args.len > 1) args[1] else default_manifest_path;
-    const manifest_input = try std.Io.Dir.cwd().readFileAlloc(init.io, manifest_path, allocator, .limited(16 * 1024 * 1024));
+    const manifest_input = try readRequiredFile(init.io, allocator, manifest_path, "asset manifest");
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_input, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const repo_root = try repoRootForManifest(allocator, manifest_path);
     const paths = try findQ4Paths(allocator, repo_root, parsed.value);
+    try requireReferencedAssetFile(init.io, paths.config_path, "model config");
+    try requireReferencedAssetFile(init.io, paths.safetensors_path, "safetensors model");
 
     var tok: bolt.tokenizer.Tokenizer = undefined;
     try loadTokenizerFromFile(init.io, allocator, &tok, paths.tokenizer_path);
@@ -128,11 +175,13 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn runDecodeBenchmark(io: std.Io, allocator: std.mem.Allocator, manifest_path: []const u8) !Q4DecodeBenchmark {
-    const manifest_input = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(16 * 1024 * 1024));
+    const manifest_input = try readRequiredFile(io, allocator, manifest_path, "asset manifest");
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_input, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const repo_root = try repoRootForManifest(allocator, manifest_path);
     const paths = try findQ4Paths(allocator, repo_root, parsed.value);
+    try requireReferencedAssetFile(io, paths.config_path, "model config");
+    try requireReferencedAssetFile(io, paths.safetensors_path, "safetensors model");
     var tok: bolt.tokenizer.Tokenizer = undefined;
     try loadTokenizerFromFile(io, allocator, &tok, paths.tokenizer_path);
     defer tok.deinit();
@@ -149,6 +198,12 @@ pub fn runDecodeBenchmark(io: std.Io, allocator: std.mem.Allocator, manifest_pat
         .q4_projection_dispatches = generation.metal_projection_dispatches,
         .q4_logits_dispatches = generation.metal_logits_dispatches,
     };
+}
+
+fn ensureParentDir(io: std.Io, path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
+    }
 }
 
 fn computeGenerationProbe(io: std.Io, safetensors_path: []const u8, prompt_ids: []const u32) !GenerationProbe {
@@ -568,31 +623,25 @@ fn findQ4Paths(allocator: std.mem.Allocator, repo_root: []const u8, root: std.js
             if (std.mem.eql(u8, base, "tokenizer.json")) t = try resolveManifestPath(allocator, repo_root, pv.string);
             if (std.mem.eql(u8, base, "model.safetensors")) s = try resolveManifestPath(allocator, repo_root, pv.string);
         }
-        return .{ .config_path = c orelse return error.MissingModelConfig, .tokenizer_path = t orelse return error.MissingTokenizerJson, .safetensors_path = s orelse return error.MissingSafetensors };
+        if (c == null) return missingManifestEntry("qwen3-1.7b-q4-gs64", "config.json");
+        if (t == null) return missingManifestEntry("qwen3-1.7b-q4-gs64", "tokenizer.json");
+        if (s == null) return missingManifestEntry("qwen3-1.7b-q4-gs64", "model.safetensors");
+        return .{ .config_path = c.?, .tokenizer_path = t.?, .safetensors_path = s.? };
     }
-    return error.MissingQ4Asset;
+    return missingAssetEntry("qwen3-1.7b-q4-gs64");
 }
 
 fn loadTokenizerFromFile(io: std.Io, allocator: std.mem.Allocator, out: *bolt.tokenizer.Tokenizer, path: []const u8) !void {
-    const input = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(32 * 1024 * 1024));
+    const input = try readReferencedAssetFile(io, allocator, path, "tokenizer json", 32 * 1024 * 1024);
     try out.initFromJson(allocator, input);
 }
 
 fn repoRootForManifest(allocator: std.mem.Allocator, manifest_path: []const u8) ![]const u8 {
-    const marker = "artifacts/";
-    if (std.mem.indexOf(u8, manifest_path, marker)) |index| {
-        if (index == 0) return allocator.dupe(u8, ".");
-        var prefix = manifest_path[0..index];
-        while (prefix.len > 0 and prefix[prefix.len - 1] == '/') prefix = prefix[0 .. prefix.len - 1];
-        if (prefix.len == 0) return allocator.dupe(u8, ".");
-        return allocator.dupe(u8, prefix);
-    }
-    return allocator.dupe(u8, ".");
+    return asset_paths.repoRootForManifest(allocator, manifest_path);
 }
 
 fn resolveManifestPath(allocator: std.mem.Allocator, repo_root: []const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.path.join(allocator, &.{ repo_root, path });
+    return asset_paths.resolveManifestPath(allocator, repo_root, path);
 }
 
 fn writeIds(writer: anytype, ids: []const u32) !void {
@@ -605,6 +654,7 @@ fn writeIds(writer: anytype, ids: []const u32) !void {
 }
 
 fn writeArtifact(init: std.process.Init, manifest_path: []const u8, paths: Paths, prompt_ids: []const u32, generation: GenerationProbe, metal_probe: MetalQ4Probe, tokenizer_pass: bool, tensor_pass: bool, gate_pass: bool) !void {
+    try ensureParentDir(init.io, artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [32768]u8 = undefined;
@@ -619,7 +669,7 @@ fn writeArtifact(init: std.process.Init, manifest_path: []const u8, paths: Paths
 }
 
 fn writeJson(w: anytype, manifest_path: []const u8, paths: Paths, prompt_ids: []const u32, g: GenerationProbe, metal_probe: MetalQ4Probe, tokenizer_pass: bool, tensor_pass: bool, gate_pass: bool) !void {
-    try w.print("{{\n  \"schema_version\":1,\n  \"gate\":\"nnzap-bonsai-q4-golden\",\n  \"status\":\"{s}\",\n  \"acceptance\":\"real_q4_transformer_golden_{s}\",\n  \"manifest_path\":\"{s}\",\n  \"config_path\":\"{s}\",\n  \"tokenizer_path\":\"{s}\",\n  \"safetensors_path\":\"{s}\",\n  \"tokenizer_pass\":{s},\n  \"tensor_pass\":{s},\n  \"prompt\":\"{s}\",\n  \"prompt_token_ids\":", .{ if (gate_pass) "pass" else "blocked", if (gate_pass) "passed" else "blocked", manifest_path, paths.config_path, paths.tokenizer_path, paths.safetensors_path, if (tokenizer_pass) "true" else "false", if (tensor_pass) "true" else "false", golden_prompt });
+    try w.print("{{\n  \"schema_version\":1,\n  \"gate\":\"bolt-bonsai-q4-golden\",\n  \"status\":\"{s}\",\n  \"acceptance\":\"real_q4_transformer_golden_{s}\",\n  \"manifest_path\":\"{s}\",\n  \"config_path\":\"{s}\",\n  \"tokenizer_path\":\"{s}\",\n  \"safetensors_path\":\"{s}\",\n  \"tokenizer_pass\":{s},\n  \"tensor_pass\":{s},\n  \"prompt\":\"{s}\",\n  \"prompt_token_ids\":", .{ if (gate_pass) "pass" else "blocked", if (gate_pass) "passed" else "blocked", manifest_path, paths.config_path, paths.tokenizer_path, paths.safetensors_path, if (tokenizer_pass) "true" else "false", if (tensor_pass) "true" else "false", golden_prompt });
     try writeIds(w, prompt_ids);
     try w.writeAll(",\n  \"generated_tokens\":");
     try writeIds(w, g.generated_tokens[0..g.generated_count]);

@@ -1,18 +1,76 @@
+# macOS / OS metadata
 .DS_Store
-.omc/
-reference/
-artifacts/**
-!artifacts/**/
-!artifacts/**/.gitkeep
-artifacts/assets/
-# Real datasets/models are local final-gate assets.
-data/
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100/
+.Trashes/
 
-# Python local caches
+# Editor / IDE local state
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local agent/runtime state
+.omc/
+.omx/
+.codex/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Python local caches / virtualenvs
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
 
-# Zig build outputs
+# Zig build outputs and caches
 zig-cache/
 .zig-cache/
 zig-out/
+
+# Native build outputs
+build/
+dist/
+out/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Node/package-manager caches if tooling is added locally
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+
+# Local reference checkouts and generated evidence
+reference/
+artifacts/
+
+# Real datasets/models are local final-gate assets.
+data/

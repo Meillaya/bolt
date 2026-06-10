@@ -5,8 +5,8 @@ pub fn main() !void {
         .lane = "bonsai",
         .prompt_path = "programs/bonsai_system.md",
         .researcher_step = "bonsai-researcher",
-        .offline_artifact = "../artifacts/labrat-m5-bonsai-agent.json",
-        .blocked_artifact = "../artifacts/blockers/labrat-m5-bonsai-agent-live-blocked.json",
-        .audit_artifact = "../artifacts/labrat-m5-bonsai-agent-audit.jsonl",
+        .offline_artifact = "../artifacts/labrat-bonsai-agent.json",
+        .blocked_artifact = "../artifacts/blockers/labrat-bonsai-agent-live-blocked.json",
+        .audit_artifact = "../artifacts/labrat-bonsai-agent-audit.jsonl",
     });
 }

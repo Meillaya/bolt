@@ -106,7 +106,7 @@ kernel void softmax_f32(
 }
 
 // Reference-compatible Q1_0_g128 matrix-vector multiply foundation.
-// Matches the buffer/dimension contract used by reference nnmetal qmv.
+// Matches the buffer/dimension contract used by Bolt qmv.
 struct QMVDims {
     uint M;
     uint K;

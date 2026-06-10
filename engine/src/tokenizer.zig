@@ -1213,3 +1213,91 @@ pub fn decodeUtf8Codepoint(bytes: []const u8) u21 {
     }
     return @as(u21, bytes[0] & 0x07) << 18 | @as(u21, bytes[1] & 0x3F) << 12 | @as(u21, bytes[2] & 0x3F) << 6 | @as(u21, bytes[3] & 0x3F);
 }
+
+test "byte unicode mapping is bijective for all bytes" {
+    var seen = [_]bool{false} ** 324;
+    for (0..256) |i| {
+        const cp = byte_map.forward[i];
+        try std.testing.expect(cp < seen.len);
+        try std.testing.expect(!seen[cp]);
+        seen[cp] = true;
+        try std.testing.expect(byte_map.reverse_valid[cp]);
+        try std.testing.expectEqual(@as(u8, @intCast(i)), byte_map.reverse[cp]);
+    }
+}
+
+test "direct byte unicode mappings preserve printable bytes" {
+    for (33..127) |b| {
+        try std.testing.expectEqual(@as(u21, @intCast(b)), byte_map.forward[b]);
+    }
+    try std.testing.expect(byte_map.forward[32] != 32);
+    try std.testing.expect(byte_map.forward[32] >= 256);
+}
+
+test "pre-tokenizer groups representative chunk classes" {
+    try std.testing.expectEqual(@as(u32, 5), nextPretokenChunk("hello world"));
+    try std.testing.expectEqual(@as(u32, 6), nextPretokenChunk(" world"));
+    try std.testing.expectEqual(@as(u32, 3), nextPretokenChunk("123456"));
+    try std.testing.expectEqual(@as(u32, 2), nextPretokenChunk("42abc"));
+    try std.testing.expectEqual(@as(u32, 2), nextPretokenChunk("'s great"));
+    try std.testing.expectEqual(@as(u32, 3), nextPretokenChunk("'re done"));
+    try std.testing.expectEqual(@as(u32, 3), nextPretokenChunk("!!!"));
+    try std.testing.expectEqual(@as(u32, 4), nextPretokenChunk(" !!!"));
+    try std.testing.expectEqual(@as(u32, 2), nextPretokenChunk("\n\n"));
+    try std.testing.expectEqual(@as(u32, 3), nextPretokenChunk("   abc"));
+}
+
+test "utf8 helper decodes representative codepoints" {
+    try std.testing.expectEqual(@as(u21, 'a'), decodeUtf8Codepoint("a"));
+    try std.testing.expectEqual(@as(u21, 0x120), decodeUtf8Codepoint(&[_]u8{ 0xC4, 0xA0 }));
+    try std.testing.expectEqual(@as(u21, 0x20AC), decodeUtf8Codepoint(&[_]u8{ 0xE2, 0x82, 0xAC }));
+}
+
+test "BPE merge cascades through known priorities" {
+    const json =
+        \\{
+        \\  "model": {
+        \\    "type": "BPE",
+        \\    "vocab": {"a": 0, "b": 1, "c": 2, "ab": 3, "abc": 4},
+        \\    "merges": ["a b", "ab c"]
+        \\  },
+        \\  "added_tokens": []
+        \\}
+    ;
+
+    var tok: Tokenizer = undefined;
+    try tok.initFromJson(std.testing.allocator, json);
+    defer tok.deinit();
+
+    var tokens = [_]u32{ 0, 1, 2 };
+    const result = tok.bpeMerge(&tokens, 3);
+    try std.testing.expectEqual(@as(u32, 1), result);
+    try std.testing.expectEqual(@as(u32, 4), tokens[0]);
+}
+
+test "BPE encode and decode round trip ASCII merges" {
+    const json =
+        \\{
+        \\  "model": {
+        \\    "type": "BPE",
+        \\    "vocab": {"a": 0, "b": 1, "c": 2, "d": 3, "ab": 4, "cd": 5, "abcd": 6},
+        \\    "merges": ["a b", "c d", "ab cd"]
+        \\  },
+        \\  "added_tokens": []
+        \\}
+    ;
+
+    var tok: Tokenizer = undefined;
+    try tok.initFromJson(std.testing.allocator, json);
+    defer tok.deinit();
+
+    var ids: [64]u32 = undefined;
+    const encode_count = try tok.encode("abcd", &ids);
+    try std.testing.expectEqual(@as(u32, 1), encode_count);
+    try std.testing.expectEqual(@as(u32, 6), ids[0]);
+
+    var buf: [64]u8 = undefined;
+    const decode_count = try tok.decode(ids[0..encode_count], &buf);
+    try std.testing.expectEqual(@as(u32, 4), decode_count);
+    try std.testing.expectEqualStrings("abcd", buf[0..decode_count]);
+}

@@ -1,26 +1,43 @@
 const std = @import("std");
 const q4_golden = @import("bonsai_q4_golden.zig");
 
-const default_golden_artifact = "../artifacts/nnzap-milestone7-q4-golden.json";
-const default_manifest_path = "../artifacts/assets/nnzap-parity/asset-manifest.json";
-const bench_artifact_path = "../artifacts/nnzap-milestone7-q4-bench.json";
+const default_golden_artifact = "../artifacts/bolt-q4-golden.json";
+const default_manifest_path = "../artifacts/assets/bolt-parity/asset-manifest.json";
+const bench_artifact_path = "../artifacts/bolt-q4-bench.json";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
     const golden_path = if (args.len > 1) args[1] else default_golden_artifact;
+    const manifest_path = if (args.len > 2) args[2] else default_manifest_path;
     const started = std.Io.Clock.awake.now(init.io).nanoseconds;
-    const input = try std.Io.Dir.cwd().readFileAlloc(init.io, golden_path, allocator, .limited(1024 * 1024));
+    const input = try readRequiredFile(init.io, allocator, golden_path, "prerequisite golden artifact");
     const stat = try std.Io.Dir.cwd().statFile(init.io, golden_path, .{});
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, input, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const pass = goldenPassed(parsed.value);
     const elapsed: u64 = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds - started);
-    const digest_hex = fileSha256Hex(init.io, allocator, golden_path) catch "sha256-unavailable";
-    const bench = if (pass) try q4_golden.runDecodeBenchmark(init.io, allocator, default_manifest_path) else q4_golden.Q4DecodeBenchmark{ .prompt_tokens = 0, .generated_tokens = 0, .matches_reference = false, .elapsed_ns = 0, .q4_projection_dispatches = 0, .q4_logits_dispatches = 0 };
+    const digest_hex = try fileSha256Hex(init.io, allocator, golden_path);
+    const bench = if (pass) try q4_golden.runDecodeBenchmark(init.io, allocator, manifest_path) else q4_golden.Q4DecodeBenchmark{ .prompt_tokens = 0, .generated_tokens = 0, .matches_reference = false, .elapsed_ns = 0, .q4_projection_dispatches = 0, .q4_logits_dispatches = 0 };
     try writeBench(init, golden_path, pass and bench.matches_reference, elapsed, stat.size, digest_hex, bench);
     if (!pass) return error.Q4GoldenGateRequiredBeforeBench;
     if (!bench.matches_reference) return error.Q4BenchmarkDecodeMismatch;
+}
+
+fn readRequiredFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, label: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing {s}: {s}\nRun the corresponding golden gate first, or pass the required artifact path if the command accepts one.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+}
+
+fn ensureParentDir(io: std.Io, path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
+    }
 }
 
 fn goldenPassed(root: std.json.Value) bool {
@@ -33,12 +50,18 @@ fn goldenPassed(root: std.json.Value) bool {
 fn fileSha256Hex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const Sha256 = std.crypto.hash.sha2.Sha256;
     var hasher = Sha256.init(.{});
-    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+        std.debug.print("could not hash prerequisite golden artifact: {s} ({s})\nRerun the corresponding golden gate before rerunning run-bonsai-q4-bench.\n", .{ path, @errorName(err) });
+        return error.MissingRequiredFile;
+    };
     defer file.close(io);
     var offset: u64 = 0;
     var buffer: [64 * 1024]u8 = undefined;
     while (true) {
-        const read_len = try file.readPositionalAll(io, &buffer, offset);
+        const read_len = file.readPositionalAll(io, &buffer, offset) catch |err| {
+            std.debug.print("could not hash prerequisite golden artifact: {s} ({s})\nRerun the corresponding golden gate before rerunning run-bonsai-q4-bench.\n", .{ path, @errorName(err) });
+            return error.MissingRequiredFile;
+        };
         if (read_len == 0) break;
         hasher.update(buffer[0..read_len]);
         offset += read_len;
@@ -49,6 +72,7 @@ fn fileSha256Hex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
 }
 
 fn writeBench(init: std.process.Init, golden_path: []const u8, golden_pass: bool, check_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: q4_golden.Q4DecodeBenchmark) !void {
+    try ensureParentDir(init.io, bench_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, bench_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [8192]u8 = undefined;
@@ -65,7 +89,7 @@ fn writeJson(w: anytype, golden_path: []const u8, golden_pass: bool, check_ns: u
     try w.print(
         "{{\n" ++
             "  \"schema_version\":1,\n" ++
-            "  \"gate\":\"nnzap-bonsai-q4-bench\",\n" ++
+            "  \"gate\":\"bolt-bonsai-q4-bench\",\n" ++
             "  \"status\":\"{s}\",\n" ++
             "  \"correctness_gate\":{{\"golden_artifact\":\"{s}\",\"required\":true,\"passed\":{s},\"artifact_size_bytes\":{d},\"artifact_sha256\":\"{s}\"}},\n" ++
             "  \"timing\":{{\"golden_artifact_check_ns\":{d},\"real_decode_benchmark_ns\":{d}}},\n" ++

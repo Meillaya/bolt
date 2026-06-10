@@ -3,6 +3,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
+pub const ResearcherMode = enum {
+    summary,
+    bench_compare,
+    summaries,
+};
+
 pub const CommandSpec = struct {
     name: []const u8,
     argv: []const []const u8,
@@ -24,6 +30,22 @@ pub fn writeResearcherSummary(
     lane: []const u8,
     output_artifact: []const u8,
     commands: []const CommandSpec,
+) !void {
+    try writeResearcherSummaryMode(
+        allocator,
+        lane,
+        output_artifact,
+        commands,
+        .summary,
+    );
+}
+
+pub fn writeResearcherSummaryMode(
+    allocator: Allocator,
+    lane: []const u8,
+    output_artifact: []const u8,
+    commands: []const CommandSpec,
+    mode: ResearcherMode,
 ) !void {
     std.debug.assert(lane.len > 0);
     std.debug.assert(output_artifact.len > 0);
@@ -52,8 +74,22 @@ pub fn writeResearcherSummary(
         if (!artifact_exists or !artifact_pass) status_pass = false;
     }
 
-    try writeSummary(arena, lane, output_artifact, results, status_pass);
+    try writeSummary(arena, lane, output_artifact, results, status_pass, mode);
     if (!status_pass) std.process.exit(1);
+}
+
+pub fn researcherModeFromArgs(args: []const []const u8) !ResearcherMode {
+    if (args.len < 2) return .summary;
+    return researcherModeFromArg(args[1]);
+}
+
+pub fn researcherModeFromArg(arg: ?[]const u8) !ResearcherMode {
+    const value = arg orelse return .summary;
+    if (std.mem.eql(u8, value, "summary")) return .summary;
+    if (std.mem.eql(u8, value, "bench-compare")) return .bench_compare;
+    if (std.mem.eql(u8, value, "summaries")) return .summaries;
+    if (std.mem.eql(u8, value, "history")) return .summaries;
+    return error.UnsupportedResearcherCommand;
 }
 
 fn artifactHasPassStatus(
@@ -61,20 +97,50 @@ fn artifactHasPassStatus(
     path: []const u8,
 ) bool {
     const content = readSmallFile(arena, path) catch return false;
-    const pass_markers = [_][]const u8{
-        "\"status\": \"pass\"",
-        "\"status\":\"pass\"",
-        "\"passed\": true",
-        "\"ok\": true",
-        "\"passes_reference_relative_threshold\": true",
-        "\"selected_label_parity\": true",
-        "\"tokens_match\": true",
-        "\"matches\": true",
-    };
-    for (pass_markers) |marker| {
-        if (std.mem.indexOf(u8, content, marker) != null) return true;
+    var parsed = std.json.parseFromSlice(
+        std.json.Value,
+        arena,
+        content,
+        .{ .allocate = .alloc_always },
+    ) catch return false;
+    defer parsed.deinit();
+    return jsonValueHasPassStatus(parsed.value);
+}
+
+fn jsonValueHasPassStatus(value: std.json.Value) bool {
+    switch (value) {
+        .object => |object| {
+            if (object.get("status")) |status| {
+                if (status == .string and std.mem.eql(u8, status.string, "pass")) return true;
+            }
+            const pass_booleans = [_][]const u8{
+                "passed",
+                "ok",
+                "passes_reference_relative_threshold",
+                "selected_label_parity",
+                "tokens_match",
+                "matches",
+                "matches_reference",
+            };
+            for (pass_booleans) |key| {
+                if (object.get(key)) |field| {
+                    if (field == .bool and field.bool) return true;
+                }
+            }
+            var it = object.iterator();
+            while (it.next()) |entry| {
+                if (jsonValueHasPassStatus(entry.value_ptr.*)) return true;
+            }
+            return false;
+        },
+        .array => |array| {
+            for (array.items) |item| {
+                if (jsonValueHasPassStatus(item)) return true;
+            }
+            return false;
+        },
+        else => return false,
     }
-    return false;
 }
 
 fn readSmallFile(arena: Allocator, path: []const u8) ![]const u8 {
@@ -93,6 +159,7 @@ fn readSmallFile(arena: Allocator, path: []const u8) ![]const u8 {
 }
 
 fn writeFile(path: []const u8, content: []const u8) !void {
+    try ensureParentDir(path);
     var path_buf: [1024:0]u8 = undefined;
     if (path.len >= path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);
@@ -101,6 +168,13 @@ fn writeFile(path: []const u8, content: []const u8) !void {
     defer _ = std.c.fclose(file);
     const n = std.c.fwrite(content.ptr, 1, content.len, file);
     if (n != content.len) return error.WriteFailed;
+}
+
+fn ensureParentDir(path: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return;
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    try std.Io.Dir.cwd().createDirPath(io_state.io(), parent);
 }
 
 fn fileExists(path: []const u8) bool {
@@ -119,17 +193,23 @@ fn writeSummary(
     output_artifact: []const u8,
     results: []const CommandResult,
     status_pass: bool,
+    mode: ResearcherMode,
 ) !void {
     const status = if (status_pass) "pass" else "blocked";
+    const summaries_path = try researcherSummariesPath(arena, lane);
+    try writeTextSummary(arena, summaries_path, lane, results, status_pass, mode);
     const epoch = epochSeconds();
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\n");
     try appendField(&buf, arena, "schema_version", "1", true);
-    try appendStringField(&buf, arena, "milestone", "Labrat Phase 2 M3 researcher parity", true);
+    try appendStringField(&buf, arena, "gate", "Labrat researcher parity", true);
     try appendStringField(&buf, arena, "lane", lane, true);
+    try appendStringField(&buf, arena, "mode", researcherModeName(mode), true);
     try appendStringField(&buf, arena, "status", status, true);
+    try appendStringField(&buf, arena, "summaries_path", summaries_path, true);
     const epoch_str = try std.fmt.allocPrint(arena, "{d}", .{epoch});
     try appendField(&buf, arena, "timestamp_unix", epoch_str, true);
+    try appendProductWorkflowAliases(&buf, arena, summaries_path);
     try buf.appendSlice(arena, "  \"commands\": [\n");
     for (results, 0..) |result, i| {
         if (i > 0) try buf.appendSlice(arena, ",\n");
@@ -155,6 +235,56 @@ fn writeSummary(
     }
     try buf.appendSlice(arena, "\n  ]\n}\n");
     try writeFile(output_artifact, buf.items);
+}
+
+fn appendProductWorkflowAliases(
+    buf: *std.ArrayList(u8),
+    arena: Allocator,
+    summaries_path: []const u8,
+) !void {
+    const escaped = try jsonEscape(arena, summaries_path);
+    try appendFmt(
+        buf,
+        arena,
+        "  \"product_workflows\": {{\"bench_compare\":\"<researcher> bench-compare\",\"summaries\":\"cat {s}\"}},\n",
+        .{escaped},
+    );
+}
+
+fn writeTextSummary(
+    arena: Allocator,
+    path: []const u8,
+    lane: []const u8,
+    results: []const CommandResult,
+    status_pass: bool,
+    mode: ResearcherMode,
+) !void {
+    var buf: std.ArrayList(u8) = .empty;
+    try appendFmt(&buf, arena, "Labrat {s} summaries\n", .{lane});
+    try appendFmt(&buf, arena, "mode: {s}\n", .{researcherModeName(mode)});
+    try appendFmt(&buf, arena, "status: {s}\n", .{if (status_pass) "pass" else "blocked"});
+    try buf.appendSlice(arena, "commands:\n");
+    for (results) |result| {
+        try appendFmt(
+            &buf,
+            arena,
+            "- {s}: artifact={s} exists={} pass={}\n",
+            .{ result.name, result.artifact, result.artifact_exists, result.artifact_status_pass },
+        );
+    }
+    try writeFile(path, buf.items);
+}
+
+fn researcherSummariesPath(arena: Allocator, lane: []const u8) ![]const u8 {
+    return try std.fmt.allocPrint(arena, "../artifacts/labrat-history/{s}/summaries.txt", .{lane});
+}
+
+fn researcherModeName(mode: ResearcherMode) []const u8 {
+    return switch (mode) {
+        .summary => "summary",
+        .bench_compare => "bench-compare",
+        .summaries => "summaries",
+    };
 }
 
 fn argvJson(arena: Allocator, argv: []const []const u8) ![]const u8 {
@@ -227,4 +357,33 @@ fn epochSeconds() i64 {
     var tv: std.c.timeval = undefined;
     if (std.c.gettimeofday(&tv, null) == 0) return @intCast(tv.sec);
     return 0;
+}
+
+test "researcher command aliases parse product workflow modes" {
+    try std.testing.expectEqual(ResearcherMode.summary, try researcherModeFromArg(null));
+    try std.testing.expectEqual(ResearcherMode.summary, try researcherModeFromArg("summary"));
+    try std.testing.expectEqual(ResearcherMode.bench_compare, try researcherModeFromArg("bench-compare"));
+    try std.testing.expectEqual(ResearcherMode.summaries, try researcherModeFromArg("summaries"));
+    try std.testing.expectEqual(ResearcherMode.summaries, try researcherModeFromArg("history"));
+    try std.testing.expectError(error.UnsupportedResearcherCommand, researcherModeFromArg("unknown"));
+}
+
+test "researcher summaries path is lane-scoped and artifact-local" {
+    const path = try researcherSummariesPath(std.testing.allocator, "bonsai");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("../artifacts/labrat-history/bonsai/summaries.txt", path);
+}
+
+test "researcher artifact pass detection parses JSON fields" {
+    var pass_status = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"status\":\"pass\"}", .{});
+    defer pass_status.deinit();
+    try std.testing.expect(jsonValueHasPassStatus(pass_status.value));
+
+    var nested_match = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"real_generation_probe\":{\"matches_reference\":true}}", .{});
+    defer nested_match.deinit();
+    try std.testing.expect(jsonValueHasPassStatus(nested_match.value));
+
+    var blocked = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"status\":\"blocked\",\"matches_reference\":false}", .{});
+    defer blocked.deinit();
+    try std.testing.expect(!jsonValueHasPassStatus(blocked.value));
 }

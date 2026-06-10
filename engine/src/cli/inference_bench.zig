@@ -2,6 +2,7 @@ const std = @import("std");
 const bolt = @import("bolt");
 
 const default_data_dir = "../data/mnist_torch/MNIST/raw";
+const artifact_path = "../artifacts/bolt-mnist-run-infer.json";
 const iterations: usize = 200;
 const train_limit_default: usize = 50_000;
 
@@ -51,7 +52,8 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
-    try stdout.print(
+    const report = try std.fmt.allocPrint(
+        allocator,
         "{{\n" ++
             "  \"schema_version\": 2,\n" ++
             "  \"benchmark\": \"mnist_inference_bench\",\n" ++
@@ -85,7 +87,24 @@ pub fn main(init: std.process.Init) !void {
             accuracy_pct,
         },
     );
+    try writeArtifact(init.io, artifact_path, report);
+    try stdout.writeAll(report);
     try stdout.flush();
+}
+
+fn writeArtifact(io: std.Io, path: []const u8, content: []const u8) !void {
+    try ensureParentDir(io, path);
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writer.interface.writeAll(content);
+    try writer.interface.flush();
+}
+
+fn ensureParentDir(io: std.Io, path: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return;
+    try std.Io.Dir.cwd().createDirPath(io, parent);
 }
 
 fn computeTrainNorms(allocator: std.mem.Allocator, train_images: []const f32, train_limit: usize) ![]f32 {

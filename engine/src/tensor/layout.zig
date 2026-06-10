@@ -1,8 +1,7 @@
 //! Tensor and network layout contracts.
 //!
-//! The `NetworkLayout`, `LayerDesc`, and `Activation` symbols are ported from
-//! the authorized local nnzap reference for Milestone 2 parity.  The small
-//! `Shape` type is retained for existing Bolt fixture code.
+//! `NetworkLayout`, `LayerDesc`, and `Activation` define Bolt engine layout
+//! contracts. The small `Shape` type is retained for existing Bolt fixture code.
 
 const std = @import("std");
 
@@ -326,7 +325,7 @@ pub fn NetworkLayout(comptime arch: []const LayerDesc) type {
                 .{},
             );
             std.debug.print(
-                "|      nnmetal Network Layout       |\n",
+                "|      Bolt Engine Network Layout   |\n",
                 .{},
             );
             std.debug.print(
@@ -362,4 +361,30 @@ pub fn NetworkLayout(comptime arch: []const LayerDesc) type {
             );
         }
     };
+}
+
+test "shape element count covers the compact proof image surface" {
+    const shape = Shape{ .rows = 28, .cols = 28 };
+    try std.testing.expectEqual(@as(usize, 784), shape.elementCount());
+}
+
+test "network layout offsets sizes and packed weights are deterministic" {
+    const arch = [_]LayerDesc{
+        .{ .in = 3, .out = 4, .act = .relu },
+        .{ .in = 4, .out = 2, .act = .none },
+    };
+    const Layout = NetworkLayout(&arch);
+
+    try std.testing.expectEqual(@as(u32, 2), Layout.num_layers);
+    try std.testing.expectEqual(@as(u32, 12), Layout.weight_counts[0]);
+    try std.testing.expectEqual(@as(u32, 4), Layout.bias_counts[0]);
+    try std.testing.expectEqual(@as(u32, 8), Layout.weight_counts[1]);
+    try std.testing.expectEqual(@as(u32, 2), Layout.bias_counts[1]);
+    try std.testing.expectEqual(@as(u32, 0), Layout.weight_offsets[0]);
+    try std.testing.expectEqual(@as(u32, 12), Layout.bias_offsets[0]);
+    try std.testing.expectEqual(@as(u32, 16), Layout.weight_offsets[1]);
+    try std.testing.expectEqual(@as(u32, 24), Layout.bias_offsets[1]);
+    try std.testing.expectEqual(@as(u32, 26), Layout.param_count);
+    try std.testing.expectEqual(@as(u32, 4), Layout.max_activation_size);
+    try std.testing.expect(Layout.packed_weight_bytes[0] > 0);
 }

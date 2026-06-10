@@ -1,12 +1,15 @@
 const std = @import("std");
 const bolt = @import("bolt");
+const asset_paths = @import("asset_paths.zig");
 
-const default_manifest_path = "../artifacts/assets/nnzap-parity/asset-manifest.json";
-const readiness_artifact_path = "../artifacts/nnzap-milestone6-bonsai-readiness.json";
-const blocker_artifact_path = "../artifacts/blockers/milestone6-real-bonsai-decode-incomplete.json";
+const default_manifest_path = "../artifacts/assets/bolt-parity/asset-manifest.json";
+const readiness_artifact_path = "../artifacts/bolt-bonsai-readiness.json";
+const blocker_artifact_path = "../artifacts/blockers/bonsai-decode-incomplete.json";
 const golden_prompt = "The capital of France is";
 const hidden_size = 2048;
 const intermediate_size = 6144;
+const vocab_size = 151669;
+const model_layer_count = 28;
 const num_query_heads = 16;
 const num_kv_heads = 8;
 const head_dim = 128;
@@ -15,6 +18,50 @@ const partial_probe_layers = 28;
 const max_generated_tokens = 11;
 const logits_chunk_rows = 2048;
 const golden_tokens = [_]u32{ 151667, 198, 151668, 271, 785, 6722, 315, 9625, 374, 12095, 13 };
+
+fn readRequiredFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, label: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(16 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing {s}: {s}\nRun this command from engine/ after preparing real assets, or pass an explicit manifest path when this command accepts one.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+}
+
+fn readReferencedAssetFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, label: []const u8, max_bytes: usize) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_bytes)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing referenced {s}: {s}\nPrepare the real Bonsai asset listed in the manifest, or update the manifest before rerunning run-bonsai-golden.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+}
+
+fn requireReferencedAssetFile(io: std.Io, path: []const u8, label: []const u8) !void {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("missing referenced {s}: {s}\nPrepare the real Bonsai asset listed in the manifest, or update the manifest before rerunning run-bonsai-golden.\n", .{ label, path });
+            return error.MissingRequiredFile;
+        },
+        else => return err,
+    };
+    if (stat.kind != .file) {
+        std.debug.print("referenced {s} is not a file: {s}\nUpdate the manifest to point at the prepared real asset before rerunning run-bonsai-golden.\n", .{ label, path });
+        return error.MissingRequiredFile;
+    }
+}
+
+fn missingAssetEntry(asset_id: []const u8) error{MissingRequiredFile} {
+    std.debug.print("asset manifest is missing required asset entry: {s}\nPrepare the real asset files and add this asset entry to the manifest before rerunning run-bonsai-golden.\n", .{asset_id});
+    return error.MissingRequiredFile;
+}
+
+fn missingManifestEntry(asset_id: []const u8, expected_file: []const u8) error{MissingRequiredFile} {
+    std.debug.print("asset manifest entry {s} is missing required file path for {s}\nAdd that file entry after preparing real Bonsai assets, then rerun run-bonsai-golden.\n", .{ asset_id, expected_file });
+    return error.MissingRequiredFile;
+}
 
 pub const BonsaiDecodeBenchmark = struct {
     prompt_tokens: u32,
@@ -29,12 +76,14 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(allocator);
     const manifest_path = if (args.len > 1) args[1] else default_manifest_path;
 
-    const manifest_input = try std.Io.Dir.cwd().readFileAlloc(init.io, manifest_path, allocator, .limited(16 * 1024 * 1024));
+    const manifest_input = try readRequiredFile(init.io, allocator, manifest_path, "asset manifest");
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_input, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const repo_root = try repoRootForManifest(allocator, manifest_path);
 
     const paths = try findBonsaiPaths(allocator, repo_root, parsed.value);
+    try requireReferencedAssetFile(init.io, paths.config_path, "model config");
+    try requireReferencedAssetFile(init.io, paths.safetensors_path, "safetensors model");
     const report = try bolt.bonsai_model.inspectBonsai1_7BFile(init.io, allocator, paths.safetensors_path);
 
     var tok: bolt.tokenizer.Tokenizer = undefined;
@@ -60,11 +109,13 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn runDecodeBenchmark(io: std.Io, allocator: std.mem.Allocator, manifest_path: []const u8) !BonsaiDecodeBenchmark {
-    const manifest_input = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(16 * 1024 * 1024));
+    const manifest_input = try readRequiredFile(io, allocator, manifest_path, "asset manifest");
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_input, .{ .allocate = .alloc_always });
     defer parsed.deinit();
     const repo_root = try repoRootForManifest(allocator, manifest_path);
     const paths = try findBonsaiPaths(allocator, repo_root, parsed.value);
+    try requireReferencedAssetFile(io, paths.config_path, "model config");
+    try requireReferencedAssetFile(io, paths.safetensors_path, "safetensors model");
     var tok: bolt.tokenizer.Tokenizer = undefined;
     try loadTokenizerFromFile(io, allocator, &tok, paths.tokenizer_path);
     defer tok.deinit();
@@ -86,6 +137,19 @@ const BonsaiPaths = struct {
     config_path: []const u8,
     tokenizer_path: []const u8,
     safetensors_path: []const u8,
+};
+
+const F16Model = struct {
+    embedding: []f32,
+    final_norm: []f32,
+    layers: []bolt.transformer.CpuLayerWeights,
+
+    fn deinit(self: *F16Model, allocator: std.mem.Allocator) void {
+        allocator.free(self.embedding);
+        allocator.free(self.final_norm);
+        for (self.layers) |layer| freeLayer(allocator, layer);
+        allocator.free(self.layers);
+    }
 };
 
 const WeightProbe = struct {
@@ -122,6 +186,12 @@ const GenerationProbe = struct {
     matches_reference: bool,
 };
 
+fn ensureParentDir(io: std.Io, path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
+    }
+}
+
 fn findBonsaiPaths(allocator: std.mem.Allocator, repo_root: []const u8, root: std.json.Value) !BonsaiPaths {
     if (root != .object) return error.InvalidAssetManifest;
     const assets = root.object.get("assets") orelse return error.MissingAssets;
@@ -144,35 +214,29 @@ fn findBonsaiPaths(allocator: std.mem.Allocator, repo_root: []const u8, root: st
             if (std.mem.eql(u8, base, "tokenizer.json")) tokenizer_path = try resolveManifestPath(allocator, repo_root, path_value.string);
             if (std.mem.eql(u8, base, "model.safetensors")) safetensors_path = try resolveManifestPath(allocator, repo_root, path_value.string);
         }
+        if (config_path == null) return missingManifestEntry("bonsai-1.7b", "config.json");
+        if (tokenizer_path == null) return missingManifestEntry("bonsai-1.7b", "tokenizer.json");
+        if (safetensors_path == null) return missingManifestEntry("bonsai-1.7b", "model.safetensors");
         return .{
-            .config_path = config_path orelse return error.MissingModelConfig,
-            .tokenizer_path = tokenizer_path orelse return error.MissingTokenizerJson,
-            .safetensors_path = safetensors_path orelse return error.MissingSafetensors,
+            .config_path = config_path.?,
+            .tokenizer_path = tokenizer_path.?,
+            .safetensors_path = safetensors_path.?,
         };
     }
-    return error.MissingBonsaiAsset;
+    return missingAssetEntry("bonsai-1.7b");
 }
 
 fn loadTokenizerFromFile(io: std.Io, allocator: std.mem.Allocator, out: *bolt.tokenizer.Tokenizer, path: []const u8) !void {
-    const input = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(32 * 1024 * 1024));
+    const input = try readReferencedAssetFile(io, allocator, path, "tokenizer json", 32 * 1024 * 1024);
     try out.initFromJson(allocator, input);
 }
 
 fn repoRootForManifest(allocator: std.mem.Allocator, manifest_path: []const u8) ![]const u8 {
-    const marker = "artifacts/";
-    if (std.mem.indexOf(u8, manifest_path, marker)) |index| {
-        if (index == 0) return allocator.dupe(u8, ".");
-        var prefix = manifest_path[0..index];
-        while (prefix.len > 0 and (prefix[prefix.len - 1] == '/' or prefix[prefix.len - 1] == std.fs.path.sep)) prefix = prefix[0 .. prefix.len - 1];
-        if (prefix.len == 0) return allocator.dupe(u8, ".");
-        return allocator.dupe(u8, prefix);
-    }
-    return allocator.dupe(u8, ".");
+    return asset_paths.repoRootForManifest(allocator, manifest_path);
 }
 
 fn resolveManifestPath(allocator: std.mem.Allocator, repo_root: []const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.path.join(allocator, &.{ repo_root, path });
+    return asset_paths.resolveManifestPath(allocator, repo_root, path);
 }
 
 fn computeWeightProbe(io: std.Io, allocator: std.mem.Allocator, safetensors_path: []const u8, source_token: u32) !WeightProbe {
@@ -217,7 +281,7 @@ fn computePartialDecodeProbe(io: std.Io, safetensors_path: []const u8, source_to
     defer allocator.free(v_cache);
     @memset(k_cache, 0);
     @memset(v_cache, 0);
-    const dims = bolt.transformer.CpuDecodeDims{ .vocab_size = 151669, .hidden_size = hidden_size, .intermediate_size = intermediate_size, .num_query_heads = num_query_heads, .num_kv_heads = num_kv_heads, .head_dim = head_dim, .eps = 1e-6, .rope_theta = 1000000.0 };
+    const dims = bolt.transformer.CpuDecodeDims{ .vocab_size = vocab_size, .hidden_size = hidden_size, .intermediate_size = intermediate_size, .num_query_heads = num_query_heads, .num_kv_heads = num_kv_heads, .head_dim = head_dim, .eps = 1e-6, .rope_theta = 1000000.0 };
 
     for (0..layer_count) |layer_index_usize| {
         const layer_index: u32 = @intCast(layer_index_usize);
@@ -255,11 +319,17 @@ fn computeGenerationProbe(io: std.Io, safetensors_path: []const u8, prompt_ids: 
 
     const state = try allocator.alloc(f32, hidden_size);
     defer allocator.free(state);
-    const dims = bolt.transformer.CpuDecodeDims{ .vocab_size = 151669, .hidden_size = hidden_size, .intermediate_size = intermediate_size, .num_query_heads = num_query_heads, .num_kv_heads = num_kv_heads, .head_dim = head_dim, .eps = 1e-6, .rope_theta = 1000000.0 };
+    const dims = bolt.transformer.CpuDecodeDims{ .vocab_size = vocab_size, .hidden_size = hidden_size, .intermediate_size = intermediate_size, .num_query_heads = num_query_heads, .num_kv_heads = num_kv_heads, .head_dim = head_dim, .eps = 1e-6, .rope_theta = 1000000.0 };
+    var model = try loadF16Model(allocator, io, safetensors_path);
+    defer model.deinit(allocator);
 
     var top = TokenLogit{ .token = 0, .logit = -std.math.inf(f32) };
     for (prompt_ids, 0..) |token, position| {
-        top = try forwardTokenAndTop(io, allocator, safetensors_path, dims, token, position, max_positions, k_cache, v_cache, state);
+        if (position + 1 == prompt_ids.len) {
+            top = try forwardTokenAndTopModel(allocator, &model, dims, token, position, max_positions, k_cache, v_cache, state);
+        } else {
+            try forwardTokenModel(allocator, &model, dims, token, position, max_positions, k_cache, v_cache, state);
+        }
     }
 
     var generated = [_]u32{0} ** max_generated_tokens;
@@ -276,8 +346,14 @@ fn computeGenerationProbe(io: std.Io, safetensors_path: []const u8, prompt_ids: 
             matched += 1;
         } else if (first_mismatch < 0) {
             first_mismatch = @intCast(count);
+            count += 1;
+            break;
         }
-        top = try forwardTokenAndTop(io, allocator, safetensors_path, dims, next, position, max_positions, k_cache, v_cache, state);
+        if (count + 1 == golden_tokens.len) {
+            count += 1;
+            break;
+        }
+        top = try forwardTokenAndTopModel(allocator, &model, dims, next, position, max_positions, k_cache, v_cache, state);
         next = top.token;
         position += 1;
     }
@@ -291,6 +367,83 @@ fn computeGenerationProbe(io: std.Io, safetensors_path: []const u8, prompt_ids: 
         .first_mismatch_index = first_mismatch,
         .matches_reference = count == golden_tokens.len and matched == golden_tokens.len,
     };
+}
+
+fn loadF16Model(allocator: std.mem.Allocator, io: std.Io, safetensors_path: []const u8) !F16Model {
+    var loaded_layers: usize = 0;
+    var model = F16Model{
+        .embedding = try loadF16Tensor(allocator, io, safetensors_path, "model.embed_tokens.weight", vocab_size * hidden_size),
+        .final_norm = try loadF16Tensor(allocator, io, safetensors_path, "model.norm.weight", hidden_size),
+        .layers = try allocator.alloc(bolt.transformer.CpuLayerWeights, model_layer_count),
+    };
+    errdefer {
+        allocator.free(model.embedding);
+        allocator.free(model.final_norm);
+        for (model.layers[0..loaded_layers]) |layer| freeLayer(allocator, layer);
+        allocator.free(model.layers);
+    }
+    for (0..model_layer_count) |layer_index| {
+        model.layers[layer_index] = try loadLayer(allocator, io, safetensors_path, @intCast(layer_index));
+        loaded_layers += 1;
+    }
+    return model;
+}
+
+fn forwardTokenModel(
+    allocator: std.mem.Allocator,
+    model: *F16Model,
+    dims: bolt.transformer.CpuDecodeDims,
+    token: u32,
+    position: usize,
+    max_positions: usize,
+    k_cache: []f32,
+    v_cache: []f32,
+    state: []f32,
+) !void {
+    if (token >= vocab_size) return error.InvalidToken;
+    const row_start = @as(usize, token) * hidden_size;
+    @memcpy(state, model.embedding[row_start..][0..hidden_size]);
+    for (model.layers, 0..) |layer, layer_index| {
+        const cache_start = layer_index * max_positions * kv_dim;
+        try bolt.transformer.cpuForwardOneLayer(
+            allocator,
+            dims,
+            layer,
+            state,
+            position,
+            k_cache[cache_start..][0 .. max_positions * kv_dim],
+            v_cache[cache_start..][0 .. max_positions * kv_dim],
+        );
+    }
+}
+
+fn forwardTokenAndTopModel(
+    allocator: std.mem.Allocator,
+    model: *F16Model,
+    dims: bolt.transformer.CpuDecodeDims,
+    token: u32,
+    position: usize,
+    max_positions: usize,
+    k_cache: []f32,
+    v_cache: []f32,
+    state: []f32,
+) !TokenLogit {
+    try forwardTokenModel(allocator, model, dims, token, position, max_positions, k_cache, v_cache, state);
+    return computeTopLogitModel(allocator, model, state);
+}
+
+fn computeTopLogitModel(allocator: std.mem.Allocator, model: *F16Model, state: []const f32) !TokenLogit {
+    const normed = try allocator.alloc(f32, hidden_size);
+    defer allocator.free(normed);
+    const logits = try allocator.alloc(f32, vocab_size);
+    defer allocator.free(logits);
+    try bolt.transformer.rmsNorm(state, model.final_norm, normed, 1e-6);
+    bolt.transformer.matVecRows(model.embedding, vocab_size, hidden_size, normed, logits);
+    var best = TokenLogit{ .token = 0, .logit = -std.math.inf(f32) };
+    for (logits, 0..) |value, index| {
+        if (value > best.logit) best = .{ .token = @intCast(index), .logit = value };
+    }
+    return best;
 }
 
 fn forwardTokenAndTop(io: std.Io, allocator: std.mem.Allocator, safetensors_path: []const u8, dims: bolt.transformer.CpuDecodeDims, token: u32, position: usize, max_positions: usize, k_cache: []f32, v_cache: []f32, state: []f32) !TokenLogit {
@@ -511,20 +664,29 @@ fn writeReportBody(writer: anytype, manifest_path: []const u8, paths: BonsaiPath
 
 fn writeReadiness(init: std.process.Init, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, tok: bolt.tokenizer.Tokenizer, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool) !void {
     _ = tok;
+    try ensureParentDir(init.io, readiness_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, readiness_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [16384]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "nnzap-bonsai-readiness", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-readiness", if (gate_pass) "pass" else "blocked");
     try fw.interface.flush();
 }
 
 fn writeBlocker(init: std.process.Init, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool) !void {
+    if (gate_pass) {
+        std.Io.Dir.cwd().deleteFile(init.io, blocker_artifact_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        return;
+    }
+    try ensureParentDir(init.io, blocker_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, blocker_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [16384]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "nnzap-bonsai-golden", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
     try fw.interface.flush();
 }
 
@@ -532,6 +694,6 @@ fn writeStdout(init: std.process.Init, manifest_path: []const u8, paths: BonsaiP
     var stdout_buffer: [16384]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
-    try writeReportBody(stdout, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "nnzap-bonsai-golden", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(stdout, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
     try stdout.flush();
 }

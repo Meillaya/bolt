@@ -93,7 +93,7 @@ fn runOfflineScenarios(spec: AgentSpec) !void {
         arena,
         "{{\n" ++
             "  \"schema_version\": 2,\n" ++
-            "  \"milestone\": \"Labrat Phase 2 M5 agent CLI readiness\",\n" ++
+            "  \"gate\": \"Labrat agent CLI readiness\",\n" ++
             "  \"lane\": \"{s}\",\n" ++
             "  \"status\": \"{s}\",\n" ++
             "  \"mode\": \"offline-mock\",\n" ++
@@ -121,10 +121,10 @@ fn runSandboxMock(arena: std.mem.Allocator, spec: AgentSpec) !SandboxEvidence {
     var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
     defer io_state.deinit();
     const io = io_state.io();
-    try std.Io.Dir.cwd().createDirPath(io, "../artifacts/labrat-m5-sandbox");
-    const target = try std.fmt.allocPrint(arena, "../artifacts/labrat-m5-sandbox/{s}-edit.txt", .{spec.lane});
-    const snapshot = try std.fmt.allocPrint(arena, "../artifacts/labrat-m5-sandbox/{s}-edit.snapshot", .{spec.lane});
-    const copy_path = try std.fmt.allocPrint(arena, "../artifacts/labrat-m5-sandbox/{s}-copy.txt", .{spec.lane});
+    try std.Io.Dir.cwd().createDirPath(io, "../artifacts/labrat-agent-sandbox");
+    const target = try std.fmt.allocPrint(arena, "../artifacts/labrat-agent-sandbox/{s}-edit.txt", .{spec.lane});
+    const snapshot = try std.fmt.allocPrint(arena, "../artifacts/labrat-agent-sandbox/{s}-edit.snapshot", .{spec.lane});
+    const copy_path = try std.fmt.allocPrint(arena, "../artifacts/labrat-agent-sandbox/{s}-copy.txt", .{spec.lane});
 
     try writeFile(target, "original");
     try writeFile(snapshot, "original");
@@ -161,7 +161,7 @@ fn writeLiveBlocked(spec: AgentSpec) !void {
         std.heap.page_allocator,
         "{{\n" ++
             "  \"schema_version\": 1,\n" ++
-            "  \"milestone\": \"Labrat Phase 2 M5 live safety gate\",\n" ++
+            "  \"gate\": \"Labrat live safety gate\",\n" ++
             "  \"lane\": \"{s}\",\n" ++
             "  \"status\": \"blocked\",\n" ++
             "  \"blocked_reason\": \"{s}\",\n" ++
@@ -195,6 +195,7 @@ fn appendAudit(spec: AgentSpec, event: []const u8) !void {
 }
 
 fn writeFile(path: []const u8, content: []const u8) !void {
+    try ensureParentDir(path);
     var path_buf: [1024:0]u8 = undefined;
     if (path.len >= path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);
@@ -205,6 +206,7 @@ fn writeFile(path: []const u8, content: []const u8) !void {
 }
 
 fn appendFile(path: []const u8, content: []const u8) !void {
+    try ensureParentDir(path);
     var path_buf: [1024:0]u8 = undefined;
     if (path.len >= path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);
@@ -212,6 +214,13 @@ fn appendFile(path: []const u8, content: []const u8) !void {
     const file = std.c.fopen(&path_buf, "ab") orelse return error.OpenFailed;
     defer _ = std.c.fclose(file);
     if (std.c.fwrite(content.ptr, 1, content.len, file) != content.len) return error.WriteFailed;
+}
+
+fn ensureParentDir(path: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return;
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    try std.Io.Dir.cwd().createDirPath(io_state.io(), parent);
 }
 
 test "offline scenarios exercise parser dispatcher and rollback audit" {
