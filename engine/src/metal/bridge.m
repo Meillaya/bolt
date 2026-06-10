@@ -14,6 +14,8 @@
 @property(nonatomic, strong) id<MTLComputePipelineState> matrixMultiplyState;
 @property(nonatomic, strong) id<MTLComputePipelineState> biasAddState;
 @property(nonatomic, strong) id<MTLComputePipelineState> vectorReluState;
+@property(nonatomic, strong) id<MTLComputePipelineState> vectorSigmoidState;
+@property(nonatomic, strong) id<MTLComputePipelineState> vectorTanhState;
 @property(nonatomic, strong) id<MTLComputePipelineState> reduceSumState;
 @property(nonatomic, strong) id<MTLComputePipelineState> softmaxState;
 @end
@@ -337,6 +339,10 @@ void *bolt_metal_context_create(const char *source, size_t source_len, char **er
         if (bias_add_pipeline == nil) return NULL;
         id<MTLComputePipelineState> relu_pipeline = bolt_make_pipeline(device, library, @"relu_f32", error_out);
         if (relu_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> sigmoid_pipeline = bolt_make_pipeline(device, library, @"sigmoid_f32", error_out);
+        if (sigmoid_pipeline == nil) return NULL;
+        id<MTLComputePipelineState> tanh_pipeline = bolt_make_pipeline(device, library, @"tanh_f32", error_out);
+        if (tanh_pipeline == nil) return NULL;
         id<MTLComputePipelineState> reduce_sum_pipeline = bolt_make_pipeline(device, library, @"reduce_sum_f32", error_out);
         if (reduce_sum_pipeline == nil) return NULL;
         id<MTLComputePipelineState> softmax_pipeline = bolt_make_pipeline(device, library, @"softmax_f32", error_out);
@@ -351,6 +357,8 @@ void *bolt_metal_context_create(const char *source, size_t source_len, char **er
         runtime.matrixMultiplyState = matmul_pipeline;
         runtime.biasAddState = bias_add_pipeline;
         runtime.vectorReluState = relu_pipeline;
+        runtime.vectorSigmoidState = sigmoid_pipeline;
+        runtime.vectorTanhState = tanh_pipeline;
         runtime.reduceSumState = reduce_sum_pipeline;
         runtime.softmaxState = softmax_pipeline;
         return (__bridge_retained void *)runtime;
@@ -871,6 +879,52 @@ bool bolt_metal_relu_buffer_f32(
         return bolt_encode_buffer_pipeline(
             runtime,
             runtime.vectorReluState,
+            input_buffer,
+            nil,
+            count,
+            output_buffer,
+            error_out
+        );
+    }
+}
+
+bool bolt_metal_sigmoid_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    size_t count,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        return bolt_encode_buffer_pipeline(
+            runtime,
+            runtime.vectorSigmoidState,
+            input_buffer,
+            nil,
+            count,
+            output_buffer,
+            error_out
+        );
+    }
+}
+
+bool bolt_metal_tanh_buffer_f32(
+    void *context_handle,
+    void *input_handle,
+    size_t count,
+    void *output_handle,
+    char **error_out
+) {
+    @autoreleasepool {
+        BoltMetalRuntime *runtime = (__bridge BoltMetalRuntime *)context_handle;
+        BoltMetalBuffer *input_buffer = (__bridge BoltMetalBuffer *)input_handle;
+        BoltMetalBuffer *output_buffer = (__bridge BoltMetalBuffer *)output_handle;
+        return bolt_encode_buffer_pipeline(
+            runtime,
+            runtime.vectorTanhState,
             input_buffer,
             nil,
             count,

@@ -66,6 +66,26 @@ kernel void relu_f32(
     output[id] = max(input[id], 0.0f);
 }
 
+kernel void sigmoid_f32(
+    device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant uint &element_count [[buffer(2)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= element_count) return;
+    output[id] = 1.0f / (1.0f + exp(-input[id]));
+}
+
+kernel void tanh_f32(
+    device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant uint &element_count [[buffer(2)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= element_count) return;
+    output[id] = tanh(input[id]);
+}
+
 kernel void reduce_sum_f32(
     device const float *input [[buffer(0)]],
     device float *output [[buffer(1)]],

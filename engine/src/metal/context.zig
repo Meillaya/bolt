@@ -106,6 +106,20 @@ extern fn bolt_metal_relu_buffer_f32(
     output_handle: *anyopaque,
     error_out: *?[*:0]u8,
 ) bool;
+extern fn bolt_metal_sigmoid_buffer_f32(
+    context_handle: *anyopaque,
+    input_handle: *anyopaque,
+    count: usize,
+    output_handle: *anyopaque,
+    error_out: *?[*:0]u8,
+) bool;
+extern fn bolt_metal_tanh_buffer_f32(
+    context_handle: *anyopaque,
+    input_handle: *anyopaque,
+    count: usize,
+    output_handle: *anyopaque,
+    error_out: *?[*:0]u8,
+) bool;
 extern fn bolt_metal_reduce_sum_buffer_f32(
     context_handle: *anyopaque,
     input_handle: *anyopaque,
@@ -581,6 +595,50 @@ pub const Context = struct {
         if (!ok) return error.MetalExecutionFailed;
     }
 
+    pub fn sigmoidSharedBufferF32(
+        self: Context,
+        input: SharedBufferF32,
+        output: SharedBufferF32,
+    ) !void {
+        if (self.handle == null) return error.UninitializedContext;
+        if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
+        if (input.len != output.len) return error.LengthMismatch;
+        if (input.len == 0) return error.EmptyBuffer;
+
+        var error_message: ?[*:0]u8 = null;
+        const ok = bolt_metal_sigmoid_buffer_f32(
+            self.handle.?,
+            input.handle.?,
+            input.len,
+            output.handle.?,
+            &error_message,
+        );
+        defer bolt_metal_string_destroy(error_message);
+        if (!ok) return error.MetalExecutionFailed;
+    }
+
+    pub fn tanhSharedBufferF32(
+        self: Context,
+        input: SharedBufferF32,
+        output: SharedBufferF32,
+    ) !void {
+        if (self.handle == null) return error.UninitializedContext;
+        if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
+        if (input.len != output.len) return error.LengthMismatch;
+        if (input.len == 0) return error.EmptyBuffer;
+
+        var error_message: ?[*:0]u8 = null;
+        const ok = bolt_metal_tanh_buffer_f32(
+            self.handle.?,
+            input.handle.?,
+            input.len,
+            output.handle.?,
+            &error_message,
+        );
+        defer bolt_metal_string_destroy(error_message);
+        if (!ok) return error.MetalExecutionFailed;
+    }
+
     pub fn reduceSumSharedBufferF32(
         self: Context,
         input: SharedBufferF32,
@@ -756,6 +814,42 @@ pub const Context = struct {
         @memcpy(output, output_buffer.asSlice());
     }
 
+    pub fn sigmoidF32(
+        self: Context,
+        input: []const f32,
+        output: []f32,
+    ) !void {
+        if (input.len != output.len) return error.LengthMismatch;
+        if (input.len == 0) return error.EmptyBuffer;
+
+        var input_buffer = try self.createSharedBufferF32(input.len);
+        defer input_buffer.deinit();
+        try input_buffer.write(input);
+
+        var output_buffer = try self.createSharedBufferF32(output.len);
+        defer output_buffer.deinit();
+        try self.sigmoidSharedBufferF32(input_buffer, output_buffer);
+        @memcpy(output, output_buffer.asSlice());
+    }
+
+    pub fn tanhF32(
+        self: Context,
+        input: []const f32,
+        output: []f32,
+    ) !void {
+        if (input.len != output.len) return error.LengthMismatch;
+        if (input.len == 0) return error.EmptyBuffer;
+
+        var input_buffer = try self.createSharedBufferF32(input.len);
+        defer input_buffer.deinit();
+        try input_buffer.write(input);
+
+        var output_buffer = try self.createSharedBufferF32(output.len);
+        defer output_buffer.deinit();
+        try self.tanhSharedBufferF32(input_buffer, output_buffer);
+        @memcpy(output, output_buffer.asSlice());
+    }
+
     pub fn reduceSumF32(
         self: Context,
         input: []const f32,
@@ -891,6 +985,33 @@ test "metal context runs bias add and relu through shared buffers" {
     defer relu_buffer.deinit();
     try context.reluSharedBufferF32(biased_buffer, relu_buffer);
     try std.testing.expectEqualSlices(f32, &.{ 0.0, 0.0, 0.0, 5.0, 3.0, 0.0 }, relu_buffer.asSlice());
+}
+
+test "metal context runs sigmoid and tanh through shared buffers" {
+    if (!Context.isAvailable()) return error.SkipZigTest;
+
+    var context = try Context.init();
+    defer context.deinit();
+
+    var input_buffer = try context.createSharedBufferF32(3);
+    defer input_buffer.deinit();
+    try input_buffer.write(&.{ -1.0, 0.0, 1.0 });
+
+    var sigmoid_buffer = try context.createSharedBufferF32(3);
+    defer sigmoid_buffer.deinit();
+    try context.sigmoidSharedBufferF32(input_buffer, sigmoid_buffer);
+    const sigmoid = sigmoid_buffer.asSlice();
+    try std.testing.expectApproxEqAbs(@as(f32, 0.268941), sigmoid[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), sigmoid[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.731059), sigmoid[2], 0.0001);
+
+    var tanh_buffer = try context.createSharedBufferF32(3);
+    defer tanh_buffer.deinit();
+    try context.tanhSharedBufferF32(input_buffer, tanh_buffer);
+    const tanh_values = tanh_buffer.asSlice();
+    try std.testing.expectApproxEqAbs(@as(f32, -0.761594), tanh_values[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), tanh_values[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.761594), tanh_values[2], 0.0001);
 }
 
 test "metal context runs reduction and softmax through shared buffers" {

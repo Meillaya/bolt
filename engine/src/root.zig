@@ -20,6 +20,7 @@ pub const runtime = struct {
     pub const mnist_assets = @import("runtime/mnist_assets.zig");
     pub const mnist_idx = @import("runtime/mnist_idx.zig");
     pub const mnist_quant = @import("runtime/mnist_quant.zig");
+    pub const metal_mlp = @import("runtime/metal_mlp.zig");
     pub const reporting = @import("runtime/reporting.zig");
     pub const proof_checks = @import("runtime/proof_checks.zig");
     pub const proof_runs = @import("runtime/proof_runs.zig");

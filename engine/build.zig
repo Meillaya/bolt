@@ -300,6 +300,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(benchmark_kernels);
 
+    const metal_mlp_demo = b.addExecutable(.{
+        .name = "metal_mlp_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/metal_mlp_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bolt", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(metal_mlp_demo);
+
     const run_step = b.step("run", "Run the MNIST training/example equivalent");
     const run_cmd = b.addRunArtifact(train_mnist);
     run_step.dependOn(&run_cmd.step);
@@ -314,6 +327,11 @@ pub fn build(b: *std.Build) void {
     const run_infer_cmd = b.addRunArtifact(inference_bench);
     run_infer_step.dependOn(&run_infer_cmd.step);
     if (b.args) |args| run_infer_cmd.addArgs(args);
+
+    const run_metal_mlp_step = b.step("run-metal-mlp", "Run the demo Zig/Metal MLP runtime parity gate");
+    const run_metal_mlp_cmd = b.addRunArtifact(metal_mlp_demo);
+    run_metal_mlp_step.dependOn(&run_metal_mlp_cmd.step);
+    if (b.args) |args| run_metal_mlp_cmd.addArgs(args);
 
     const validate_assets_step = b.step("validate-assets", "Validate Bolt real asset manifest");
     const validate_assets_cmd = b.addRunArtifact(validate_assets);

@@ -25,7 +25,7 @@ pub const groups = [_]ShaderGroupInfo{
         .group = .active_primitives,
         .reference_file = "engine/src/metal/shaders/compute.metal subset",
         .bolt_file = "engine/src/metal/kernels.metal",
-        .kernel_count = 7,
+        .kernel_count = 9,
     },
     .{
         .group = .compute,

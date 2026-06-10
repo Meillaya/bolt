@@ -65,6 +65,7 @@ bonsai_bench
 bonsai_q4_golden
 bonsai_q4_bench
 benchmark_kernels
+metal_mlp_demo
 ```
 
 ### MNIST/runtime flows
@@ -73,6 +74,7 @@ benchmark_kernels
 zig build run                     # MNIST training/example flow
 zig build run-1bit                # 1-bit MNIST integration flow
 zig build run-infer               # MNIST inference benchmark flow
+zig build run-metal-mlp           # demo dense MLP CPU/Metal parity gate
 ```
 
 ### Real asset validation
@@ -112,6 +114,10 @@ the full real-output chain passes and emits:
 - `artifacts/bolt-bonsai-bench.json`
 - `artifacts/bolt-q4-golden.json`
 - `artifacts/bolt-q4-bench.json`
+
+The standalone demo MLP runtime gate emits:
+
+- `artifacts/bolt-metal-mlp-runtime.json`
 
 ## Asset manifest API
 
@@ -245,6 +251,7 @@ A complete local verification pass with real assets available is:
 cd engine
 zig build test --summary all
 zig build --summary all
+zig build run-metal-mlp --summary all
 zig build validate-assets --summary all
 zig build validate-tokenizer --summary all
 zig build run-bonsai --summary all
