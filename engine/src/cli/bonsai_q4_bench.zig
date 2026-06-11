@@ -1,4 +1,5 @@
 const std = @import("std");
+const bolt = @import("bolt");
 const q4_golden = @import("bonsai_q4_golden.zig");
 
 const default_golden_artifact = "../artifacts/bolt-q4-golden.json";
@@ -18,8 +19,10 @@ pub fn main(init: std.process.Init) !void {
     const pass = goldenPassed(parsed.value);
     const elapsed: u64 = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds - started);
     const digest_hex = try fileSha256Hex(init.io, allocator, golden_path);
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-q4-bench --summary all");
     const bench = if (pass) try q4_golden.runDecodeBenchmark(init.io, allocator, manifest_path) else q4_golden.Q4DecodeBenchmark{ .prompt_tokens = 0, .generated_tokens = 0, .matches_reference = false, .elapsed_ns = 0, .q4_projection_dispatches = 0, .q4_logits_dispatches = 0 };
-    try writeBench(init, golden_path, pass and bench.matches_reference, elapsed, stat.size, digest_hex, bench);
+    try writeBench(init, meta, manifest_digest, golden_path, pass and bench.matches_reference, elapsed, stat.size, digest_hex, bench);
     if (!pass) return error.Q4GoldenGateRequiredBeforeBench;
     if (!bench.matches_reference) return error.Q4BenchmarkDecodeMismatch;
 }
@@ -71,35 +74,48 @@ fn fileSha256Hex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
     return try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(digest, .lower)});
 }
 
-fn writeBench(init: std.process.Init, golden_path: []const u8, golden_pass: bool, check_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: q4_golden.Q4DecodeBenchmark) !void {
+fn writeBench(init: std.process.Init, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, golden_path: []const u8, golden_pass: bool, check_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: q4_golden.Q4DecodeBenchmark) !void {
     try ensureParentDir(init.io, bench_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, bench_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [8192]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeJson(&fw.interface, golden_path, golden_pass, check_ns, artifact_size, digest_hex, bench);
+    try writeJson(&fw.interface, meta, manifest_digest, golden_path, golden_pass, check_ns, artifact_size, digest_hex, bench);
     try fw.interface.flush();
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buf);
-    try writeJson(&stdout_writer.interface, golden_path, golden_pass, check_ns, artifact_size, digest_hex, bench);
+    try writeJson(&stdout_writer.interface, meta, manifest_digest, golden_path, golden_pass, check_ns, artifact_size, digest_hex, bench);
     try stdout_writer.interface.flush();
 }
 
-fn writeJson(w: anytype, golden_path: []const u8, golden_pass: bool, check_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: q4_golden.Q4DecodeBenchmark) !void {
+fn writeJson(w: anytype, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, golden_path: []const u8, golden_pass: bool, check_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: q4_golden.Q4DecodeBenchmark) !void {
     try w.print(
         "{{\n" ++
-            "  \"schema_version\":1,\n" ++
-            "  \"gate\":\"bolt-bonsai-q4-bench\",\n" ++
+            "  \"schema_version\":\"{s}\",\n" ++
+            "  \"artifact_type\":\"engine.q4.bench\",\n" ++
             "  \"status\":\"{s}\",\n" ++
-            "  \"correctness_gate\":{{\"golden_artifact\":\"{s}\",\"required\":true,\"passed\":{s},\"artifact_size_bytes\":{d},\"artifact_sha256\":\"{s}\"}},\n" ++
+            "  \"command\":\"{s}\",\n" ++
+            "  \"cwd\":\"{s}\",\n" ++
+            "  \"git_commit\":\"{s}\",\n" ++
+            "  \"timestamp_utc\":\"{s}\",\n" ++
+            "  \"toolchain\":{{\"zig\":\"{s}\"}},\n" ++
+            "  \"manifest_digest\":\"{s}\",\n" ++
+            "  \"benchmark\":{{\"passed\":{s},\"golden_artifact\":\"{s}\",\"required\":true,\"artifact_size_bytes\":{d},\"artifact_sha256\":\"{s}\"}},\n" ++
             "  \"timing\":{{\"golden_artifact_check_ns\":{d},\"real_decode_benchmark_ns\":{d}}},\n" ++
             "  \"workload\":{{\"kind\":\"real_q4_integrated_metal_decode\",\"prompt_tokens\":{d},\"generated_tokens\":{d},\"matches_reference\":{s},\"q4_projection_dispatches\":{d},\"q4_logits_dispatches\":{d}}},\n" ++
             "  \"benchmark_claim\":\"{s}\"\n" ++
             "}}\n",
         .{
+            bolt.runtime.artifact_metadata.schema_version,
             if (golden_pass) "pass" else "blocked",
-            golden_path,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
+            manifest_digest,
             if (golden_pass) "true" else "false",
+            golden_path,
             artifact_size,
             digest_hex,
             check_ns,

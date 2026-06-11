@@ -24,6 +24,23 @@ Default checks are portable: they must not require large model files, provider
 credentials, or platform-specific shader tooling unless explicitly requested by
 an opt-in command.
 
+## Production release posture
+
+Bolt now includes first-class release hygiene around the engine and Labrat
+surfaces:
+
+- portable default CI in `.github/workflows/ci.yml` for hosted macOS health;
+- opt-in self-hosted workflows for Metal shader and real-asset gates;
+- release checkers under `scripts/release/` and the sequence in
+  `docs/production-runbook.md`;
+- a shared artifact schema registry in `docs/artifacts/registry.md`, with
+  producer-side provenance on engine and Labrat JSON artifacts.
+
+Release evidence is written under `.omo/evidence/` during agent-driven work and
+should not be staged with product changes. Source, docs, and workflow changes can
+be checked with `python3 scripts/release/check_staging_policy.py --forbid
+.omo/drafts .omo/evidence`.
+
 ## Engine command API
 
 Run from `engine/`.
@@ -179,8 +196,10 @@ Installed agent binaries can also be run directly after `zig build`:
 ./zig-out/bin/bonsai_q4_agent
 ```
 
-Live provider execution is explicit opt-in and requires caller-provided
-environment configuration:
+live provider mode is out of v1 production scope. `LABRAT_LIVE=1` is
+accepted only to prove the fail-closed safety gate; even with
+`ANTHROPIC_API_KEY` set, Labrat must write a blocked artifact and must not call a
+provider.
 
 ```sh
 LABRAT_LIVE=1 ANTHROPIC_API_KEY=... ./zig-out/bin/bonsai_agent
@@ -280,3 +299,8 @@ requirements.
   evidence.
 - Root `tests/` is intentionally absent; test coverage lives in source-local Zig
   `test` blocks unless project policy changes.
+
+## License
+
+Bolt is licensed under the Apache License, Version 2.0. See `LICENSE`.
+

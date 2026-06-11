@@ -654,22 +654,25 @@ fn writeIds(writer: anytype, ids: []const u32) !void {
 }
 
 fn writeArtifact(init: std.process.Init, manifest_path: []const u8, paths: Paths, prompt_ids: []const u32, generation: GenerationProbe, metal_probe: MetalQ4Probe, tokenizer_pass: bool, tensor_pass: bool, gate_pass: bool) !void {
+    const allocator = init.arena.allocator();
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-q4-golden --summary all");
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
     try ensureParentDir(init.io, artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [32768]u8 = undefined;
     var fw = file.writer(init.io, &buf);
     const w = &fw.interface;
-    try writeJson(w, manifest_path, paths, prompt_ids, generation, metal_probe, tokenizer_pass, tensor_pass, gate_pass);
+    try writeJson(w, meta, manifest_digest, manifest_path, paths, prompt_ids, generation, metal_probe, tokenizer_pass, tensor_pass, gate_pass);
     try fw.interface.flush();
     var sbuf: [32768]u8 = undefined;
     var sw = std.Io.File.stdout().writer(init.io, &sbuf);
-    try writeJson(&sw.interface, manifest_path, paths, prompt_ids, generation, metal_probe, tokenizer_pass, tensor_pass, gate_pass);
+    try writeJson(&sw.interface, meta, manifest_digest, manifest_path, paths, prompt_ids, generation, metal_probe, tokenizer_pass, tensor_pass, gate_pass);
     try sw.interface.flush();
 }
 
-fn writeJson(w: anytype, manifest_path: []const u8, paths: Paths, prompt_ids: []const u32, g: GenerationProbe, metal_probe: MetalQ4Probe, tokenizer_pass: bool, tensor_pass: bool, gate_pass: bool) !void {
-    try w.print("{{\n  \"schema_version\":1,\n  \"gate\":\"bolt-bonsai-q4-golden\",\n  \"status\":\"{s}\",\n  \"acceptance\":\"real_q4_transformer_golden_{s}\",\n  \"manifest_path\":\"{s}\",\n  \"config_path\":\"{s}\",\n  \"tokenizer_path\":\"{s}\",\n  \"safetensors_path\":\"{s}\",\n  \"tokenizer_pass\":{s},\n  \"tensor_pass\":{s},\n  \"prompt\":\"{s}\",\n  \"prompt_token_ids\":", .{ if (gate_pass) "pass" else "blocked", if (gate_pass) "passed" else "blocked", manifest_path, paths.config_path, paths.tokenizer_path, paths.safetensors_path, if (tokenizer_pass) "true" else "false", if (tensor_pass) "true" else "false", golden_prompt });
+fn writeJson(w: anytype, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, manifest_path: []const u8, paths: Paths, prompt_ids: []const u32, g: GenerationProbe, metal_probe: MetalQ4Probe, tokenizer_pass: bool, tensor_pass: bool, gate_pass: bool) !void {
+    try w.print("{{\n  \"schema_version\":\"{s}\",\n  \"artifact_type\":\"engine.q4.golden\",\n  \"status\":\"{s}\",\n  \"command\":\"{s}\",\n  \"cwd\":\"{s}\",\n  \"git_commit\":\"{s}\",\n  \"timestamp_utc\":\"{s}\",\n  \"toolchain\":{{\"zig\":\"{s}\"}},\n  \"manifest_digest\":\"{s}\",\n  \"gate\":\"bolt-bonsai-q4-golden\",\n  \"acceptance\":\"real_q4_transformer_golden_{s}\",\n  \"manifest_path\":\"{s}\",\n  \"config_path\":\"{s}\",\n  \"tokenizer_path\":\"{s}\",\n  \"safetensors_path\":\"{s}\",\n  \"tokenizer_pass\":{s},\n  \"tensor_pass\":{s},\n  \"golden\":{{\"tokens_match\":{s}}},\n  \"prompt\":\"{s}\",\n  \"prompt_token_ids\":", .{ bolt.runtime.artifact_metadata.schema_version, if (gate_pass) "pass" else "blocked", meta.command, meta.cwd, meta.git_commit, meta.timestamp_utc, meta.zig_version, manifest_digest, if (gate_pass) "passed" else "blocked", manifest_path, paths.config_path, paths.tokenizer_path, paths.safetensors_path, if (tokenizer_pass) "true" else "false", if (tensor_pass) "true" else "false", if (gate_pass) "true" else "false", golden_prompt });
     try writeIds(w, prompt_ids);
     try w.writeAll(",\n  \"generated_tokens\":");
     try writeIds(w, g.generated_tokens[0..g.generated_count]);

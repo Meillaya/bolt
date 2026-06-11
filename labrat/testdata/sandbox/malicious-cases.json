@@ -1,0 +1,14 @@
+{
+  "paths": [
+    {"name": "absolute path", "path": "/etc/passwd", "read": false, "write": false},
+    {"name": "parent traversal", "path": "../escape", "read": false, "write": false},
+    {"name": "git config", "path": ".git/config", "read": false, "write": false},
+    {"name": "data root", "path": "data/secret", "read": false, "write": false},
+    {"name": "hidden root", "path": ".hidden-root/secret", "read": false, "write": false},
+    {"name": "symlink escape", "path": "zig-cache/tmp/labrat-release-sandbox/link/secret", "read": false, "write": false}
+  ],
+  "commands": [
+    {"name": "shell metacharacters", "command": "zig build test; rm -rf /", "allowed": false}
+  ],
+  "secret_output": "Authorization: Bearer sk-test-secret\nCookie: session=abc\nprovider said Bearer sk-test-secret\n{\"api_token\":\"sk-test-secret\",\"apiKey\":\"sk-test-secret\"}\n"
+}

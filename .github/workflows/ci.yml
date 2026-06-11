@@ -1,0 +1,98 @@
+name: Portable CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  default-health:
+    name: Default engine and Labrat health
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      BOLT_CI_MODE: portable
+    steps:
+      # first-party-action-exception: actions/checkout is version-pinned rather than SHA-pinned;
+      # RELEASE.md records the follow-up security review requirement for first-party actions.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # first-party-action-exception: actions/setup-python is version-pinned rather than SHA-pinned;
+      # Python 3.11 is required by the release validator script metadata.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Zig 0.16.0
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            arm64) zig_arch="aarch64" ;;
+            x86_64) zig_arch="x86_64" ;;
+            *) echo "unsupported macOS architecture: $arch" >&2; exit 1 ;;
+          esac
+          zig_key="${zig_arch}-macos"
+          zig_dir="zig-${zig_arch}-macos-0.16.0"
+          ZIG_KEY="$zig_key" python3 - <<'PY' > zig-download.txt
+import json
+import os
+import urllib.request
+
+index_url = "https://ziglang.org/download/index.json"
+with urllib.request.urlopen(index_url, timeout=30) as response:
+    index = json.load(response)
+release = index["0.16.0"]
+entry = release[os.environ["ZIG_KEY"]]
+print(entry["tarball"])
+print(entry["shasum"])
+PY
+          zig_url="$(sed -n '1p' zig-download.txt)"
+          zig_sha="$(sed -n '2p' zig-download.txt)"
+          curl --fail --location --retry 3 --output zig.tar.xz "$zig_url"
+          printf '%s  zig.tar.xz\n' "$zig_sha" | shasum -a 256 --check
+          tar -xf zig.tar.xz
+          test -x "$PWD/$zig_dir/zig"
+          echo "$PWD/$zig_dir" >> "$GITHUB_PATH"
+
+      - name: Record toolchain
+        run: |
+          set -euo pipefail
+          zig version
+          sw_vers
+          uname -a
+
+      - name: Engine tests
+        run: cd engine && zig build test --summary all
+
+      - name: Engine build
+        run: cd engine && zig build --summary all
+
+      - name: Labrat tests
+        run: cd labrat && zig build test --summary all
+
+      - name: Labrat offline API gate
+        run: cd labrat && zig build api-offline-test --summary all
+
+      # first-party-action-exception: actions/upload-artifact is version-pinned rather than SHA-pinned;
+      # RELEASE.md records the follow-up security review requirement for first-party actions.
+      - name: Upload portable logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-ci-logs
+          path: |
+            engine/.zig-cache/**/*.log
+            labrat/.zig-cache/**/*.log
+          if-no-files-found: ignore
+          retention-days: 5

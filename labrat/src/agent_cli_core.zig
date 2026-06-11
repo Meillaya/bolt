@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const api = @import("api_client.zig");
 const agent = @import("agent_core.zig");
 
@@ -36,6 +37,70 @@ fn isLiveRequested() bool {
 fn hasApiKey() bool {
     const val = std.c.getenv("ANTHROPIC_API_KEY") orelse return false;
     return std.mem.span(val).len > 0;
+}
+
+const ArtifactMetadata = struct {
+    command: []const u8,
+    cwd: []const u8,
+    git_commit: []const u8,
+    timestamp_utc: []const u8,
+    zig_version: []const u8,
+};
+
+fn captureArtifactMetadata(arena: std.mem.Allocator, command: []const u8) !ArtifactMetadata {
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+    return .{
+        .command = command,
+        .cwd = try commandOutput(arena, io, &.{"pwd"}),
+        .git_commit = try gitIdentity(arena, io),
+        .timestamp_utc = try formatTimestampUtcAlloc(arena, io),
+        .zig_version = builtin.zig_version_string,
+    };
+}
+
+fn gitIdentity(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const sha = commandOutput(arena, io, &.{ "git", "rev-parse", "--short", "HEAD" }) catch return "dirty";
+    if (std.mem.eql(u8, sha, "unknown")) return "dirty";
+    const status = commandOutput(arena, io, &.{ "git", "status", "--short" }) catch "dirty";
+    if (status.len == 0) return sha;
+    return try std.fmt.allocPrint(arena, "{s}-dirty", .{sha});
+}
+
+fn commandOutput(arena: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]const u8 {
+    const result = std.process.run(arena, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+        .expand_arg0 = .expand,
+    }) catch return "unknown";
+    switch (result.term) {
+        .exited => |code| if (code != 0) return "unknown",
+        else => return "unknown",
+    }
+    return std.mem.trim(u8, result.stdout, "\n\r \t");
+}
+
+fn formatTimestampUtcAlloc(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const ts: u64 = @intCast(std.Io.Timestamp.now(io, .real).toSeconds());
+    const es = std.time.epoch.EpochSeconds{ .secs = ts };
+    const epoch_day = es.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_secs = es.getDaySeconds();
+    return try std.fmt.allocPrint(
+        arena,
+        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+        .{
+            year_day.year,
+            month_day.month.numeric(),
+            @as(u32, month_day.day_index) + 1,
+            day_secs.getHoursIntoDay(),
+            day_secs.getMinutesIntoHour(),
+            day_secs.getSecondsIntoMinute(),
+        },
+    );
 }
 
 fn runOfflineScenarios(spec: AgentSpec) !void {
@@ -89,14 +154,23 @@ fn runOfflineScenarios(spec: AgentSpec) !void {
     const usage = try agent.buildUsageSummary(arena, turns.items);
     const sandbox_evidence = try runSandboxMock(arena, spec);
     const status = if (pass_count == scenarios.len and sandbox_evidence.success) "pass" else "fail";
+    const command = try std.fmt.allocPrint(arena, "zig build {s}-agent --summary all", .{spec.lane});
+    const meta = try captureArtifactMetadata(arena, command);
     const json = try std.fmt.allocPrint(
         arena,
         "{{\n" ++
-            "  \"schema_version\": 2,\n" ++
+            "  \"schema_version\": \"1\",\n" ++
+            "  \"artifact_type\": \"labrat.agent\",\n" ++
+            "  \"status\": \"{s}\",\n" ++
+            "  \"command\": \"{s}\",\n" ++
+            "  \"cwd\": \"{s}\",\n" ++
+            "  \"git_commit\": \"{s}\",\n" ++
+            "  \"timestamp_utc\": \"{s}\",\n" ++
+            "  \"toolchain\": {{\"zig\":\"{s}\"}},\n" ++
             "  \"gate\": \"Labrat agent CLI readiness\",\n" ++
             "  \"lane\": \"{s}\",\n" ++
-            "  \"status\": \"{s}\",\n" ++
             "  \"mode\": \"offline-mock\",\n" ++
+            "  \"agent\": {{\"passed\":{},\"exit_code\":0,\"compiled\":true,\"failure_reason\":null}},\n" ++
             "  \"system_prompt_path\": \"{s}\",\n" ++
             "  \"researcher_step\": \"{s}\",\n" ++
             "  \"offline_scenarios\": {s},\n" ++
@@ -105,7 +179,21 @@ fn runOfflineScenarios(spec: AgentSpec) !void {
             "  \"sandbox\": {{\"edit\":\"snapshot-before-write-proven-by-temp-sandbox\",\"build\":\"allowlisted-timeout\",\"test\":\"allowlisted-timeout\",\"rollback\":\"mock-abandon-restores-snapshot-proven-by-temp-sandbox\"}},\n" ++
             "  \"live_api\": {{\"default\":\"disabled\",\"requires\":[\"LABRAT_LIVE=1\",\"ANTHROPIC_API_KEY\"]}}\n" ++
             "}}\n",
-        .{ spec.lane, status, spec.prompt_path, spec.researcher_step, scenario_json.items, usage, sandbox_evidence.json },
+        .{
+            status,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
+            spec.lane,
+            std.mem.eql(u8, status, "pass"),
+            spec.prompt_path,
+            spec.researcher_step,
+            scenario_json.items,
+            usage,
+            sandbox_evidence.json,
+        },
     );
     try writeFile(spec.offline_artifact, json);
     try appendAudit(spec, "offline_scenarios_complete");
@@ -156,7 +244,10 @@ fn readFileAlloc(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
 }
 
 fn writeLiveBlocked(spec: AgentSpec) !void {
-    const reason = if (hasApiKey()) "live_provider_not_enabled_in_phase2_gate" else "missing_api_key";
+    const reason = if (hasApiKey())
+        "live_provider_out_of_v1_production_scope"
+    else
+        "missing_api_key";
     const json = try std.fmt.allocPrint(
         std.heap.page_allocator,
         "{{\n" ++

@@ -1,0 +1,63 @@
+name: Opt-in Metal shader gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional reason for running the Apple-Silicon Metal shader gate"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metal-shader-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metal-shaders:
+    name: Apple-Silicon Metal shader tests
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, macOS, ARM64, Metal]
+    timeout-minutes: 30
+    env:
+      BOLT_CI_MODE: metal-opt-in
+    steps:
+      # first-party-action-exception: actions/checkout is version-pinned rather than SHA-pinned;
+      # this opt-in workflow never runs as required default CI.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Record Apple platform and Metal metadata
+        run: |
+          set -euo pipefail
+          echo "## Apple platform" | tee metal-capability.txt
+          sw_vers | tee -a metal-capability.txt
+          uname -a | tee -a metal-capability.txt
+          echo "## Xcode" | tee -a metal-capability.txt
+          xcodebuild -version | tee -a metal-capability.txt
+          echo "## SDK" | tee -a metal-capability.txt
+          xcrun --sdk macosx --show-sdk-path | tee -a metal-capability.txt
+          xcrun --sdk macosx --show-sdk-version | tee -a metal-capability.txt
+          echo "## Metal compiler" | tee -a metal-capability.txt
+          xcrun -find metal | tee -a metal-capability.txt
+          xcrun metal -v 2>&1 | tee -a metal-capability.txt || true
+          echo "## GPU" | tee -a metal-capability.txt
+          system_profiler SPDisplaysDataType | tee -a metal-capability.txt
+          echo "## Zig" | tee -a metal-capability.txt
+          zig version | tee -a metal-capability.txt
+
+      - name: Run Metal shader tests
+        run: cd engine && zig build test-metal-shaders --summary all
+
+      # first-party-action-exception: actions/upload-artifact is version-pinned rather than SHA-pinned;
+      # this opt-in workflow keeps metadata short-lived for fallback diagnostics.
+      - name: Upload Metal capability metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-capability-${{ github.run_id }}
+          path: metal-capability.txt
+          if-no-files-found: warn
+          retention-days: 5

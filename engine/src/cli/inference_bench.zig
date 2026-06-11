@@ -48,6 +48,7 @@ pub fn main(init: std.process.Init) !void {
     const mean = sum_us / @as(f64, @floatFromInt(iterations));
     const total_ms = @as(f64, @floatFromInt(std.Io.Clock.awake.now(init.io).nanoseconds - started_total)) / 1_000_000.0;
     const accuracy_pct = @as(f64, @floatFromInt(correct)) * 100.0 / @as(f64, @floatFromInt(iterations));
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-infer --summary all");
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
@@ -55,7 +56,14 @@ pub fn main(init: std.process.Init) !void {
     const report = try std.fmt.allocPrint(
         allocator,
         "{{\n" ++
-            "  \"schema_version\": 2,\n" ++
+            "  \"schema_version\": \"{s}\",\n" ++
+            "  \"artifact_type\": \"engine.mnist.run_infer\",\n" ++
+            "  \"status\": \"pass\",\n" ++
+            "  \"command\": \"{s}\",\n" ++
+            "  \"cwd\": \"{s}\",\n" ++
+            "  \"git_commit\": \"{s}\",\n" ++
+            "  \"timestamp_utc\": \"{s}\",\n" ++
+            "  \"toolchain\": {{\"zig\":\"{s}\"}},\n" ++
             "  \"benchmark\": \"mnist_inference_bench\",\n" ++
             "  \"backend\": \"metal-knn-matmul-f32\",\n" ++
             "  \"metal_available\": true,\n" ++
@@ -67,10 +75,16 @@ pub fn main(init: std.process.Init) !void {
             "  \"gpu_batched\": {{\"total_samples\":{d},\"batch_size\":1,\"total_ms\":{d:.6},\"images_per_sec\":{d:.6},\"status\":\"measured_metal_matmul_knn\"}},\n" ++
             "  \"gpu_single\": {{\"iterations\":{d},\"mean_us\":{d:.6},\"p50_us\":{d:.6},\"p99_us\":{d:.6},\"min_us\":{d:.6},\"max_us\":{d:.6}}},\n" ++
             "  \"accuracy\": {{\"correct\":{d},\"total\":{d},\"pct\":{d:.4}}},\n" ++
-            "  \"dispatched_kernels\": {{\"matmul_f32\":true}},\n" ++
-            "  \"status\": \"pass\"\n" ++
+            "  \"inference\": {{\"passed\":true}},\n" ++
+            "  \"dispatched_kernels\": {{\"matmul_f32\":true}}\n" ++
             "}}\n",
         .{
+            bolt.runtime.artifact_metadata.schema_version,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
             train_limit,
             iterations,
             iterations,

@@ -152,7 +152,17 @@ fn validateAsset(io: std.Io, allocator: std.mem.Allocator, repo_root: []const u8
                     recordAssetError(&status, path, "file entry must include a concrete role");
                 }
 
-                const resolved_path = try resolveManifestPath(allocator, repo_root, path);
+                const resolved_path = resolveManifestPath(allocator, repo_root, path) catch |err| switch (err) {
+                    error.DisallowedManifestPath => {
+                        recordAssetError(&status, path, "path is outside the allowed asset roots");
+                        continue;
+                    },
+                    error.PathEscapesAllowedRoot => {
+                        recordAssetError(&status, path, "path escapes the allowed asset root");
+                        continue;
+                    },
+                    else => return err,
+                };
                 defer allocator.free(resolved_path);
 
                 const stat = std.Io.Dir.cwd().statFile(io, resolved_path, .{}) catch |err| {
@@ -223,7 +233,7 @@ fn validateAssetContract(asset: std.json.Value, kind: AssetKind, status: *AssetS
         if (hasConcreteString(asset.object.get(field))) {
             status.contract_match_count += 1;
         } else {
-            status.error_count += 1;
+            recordAssetError(status, field, "asset metadata field must be concrete");
         }
     }
 
@@ -235,14 +245,14 @@ fn validateAssetContract(asset: std.json.Value, kind: AssetKind, status: *AssetS
             for (value.array.items) |item| {
                 if (item != .string or !isConcreteText(item.string)) all_concrete = false;
             }
-            if (all_concrete) status.contract_match_count += 1 else status.error_count += 1;
+            if (all_concrete) status.contract_match_count += 1 else recordAssetError(status, "acceptanceUse", "asset metadata field must be concrete");
         } else if (value == .string and isConcreteText(value.string)) {
             status.contract_match_count += 1;
         } else {
-            status.error_count += 1;
+            recordAssetError(status, "acceptanceUse", "asset metadata field must be concrete");
         }
     } else {
-        status.error_count += 1;
+        recordAssetError(status, "acceptanceUse", "asset metadata field must be concrete");
     }
 
     if (kind == .model) {
@@ -255,10 +265,10 @@ fn validateAssetContract(asset: std.json.Value, kind: AssetKind, status: *AssetS
             {
                 status.contract_match_count += 1;
             } else {
-                status.error_count += 1;
+                recordAssetError(status, "modelTokenizerPairing", "model tokenizer pairing must be concrete");
             }
         } else {
-            status.error_count += 1;
+            recordAssetError(status, "modelTokenizerPairing", "model tokenizer pairing must be concrete");
         }
     }
 }

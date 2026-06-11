@@ -36,6 +36,13 @@ pub fn main(init: std.process.Init) !void {
     const accuracy_pct = @as(f64, @floatFromInt(result.correct)) * 100.0 / @as(f64, @floatFromInt(test_limit));
     const elapsed_ms = @as(f64, @floatFromInt(std.Io.Clock.awake.now(init.io).nanoseconds - started)) / 1_000_000.0;
     const passed_reference_threshold = accuracy_pct >= reference_minus_one_pp;
+    const exact_label_parity = result.correct == test_limit;
+    const artifact_status = if (passed_reference_threshold) "pass" else "fail";
+    const meta = try bolt.runtime.artifact_metadata.capture(
+        allocator,
+        init.io,
+        "zig build run --summary all",
+    );
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
@@ -43,7 +50,14 @@ pub fn main(init: std.process.Init) !void {
     const report = try std.fmt.allocPrint(
         allocator,
         "{{\n" ++
-            "  \"schema_version\": 2,\n" ++
+            "  \"schema_version\": \"{s}\",\n" ++
+            "  \"artifact_type\": \"engine.mnist.run\",\n" ++
+            "  \"status\": \"{s}\",\n" ++
+            "  \"command\": \"{s}\",\n" ++
+            "  \"cwd\": \"{s}\",\n" ++
+            "  \"git_commit\": \"{s}\",\n" ++
+            "  \"timestamp_utc\": \"{s}\",\n" ++
+            "  \"toolchain\": {{\"zig\":\"{s}\"}},\n" ++
             "  \"backend\": \"{s}\",\n" ++
             "  \"dataset\": \"mnist-idx-real\",\n" ++
             "  \"data_dir\": \"{s}\",\n" ++
@@ -64,6 +78,7 @@ pub fn main(init: std.process.Init) !void {
             "  \"total\": {d},\n" ++
             "  \"reference_validation_accuracy_pct\": {d:.2},\n" ++
             "  \"required_accuracy_pct\": {d:.2},\n" ++
+            "  \"selected_label_parity\": {},\n" ++
             "  \"passes_reference_relative_threshold\": {},\n" ++
             "  \"metal_execution\": {{\"required\":{},\"available\":{},\"used\":{},\"dispatched_kernels\":{{\"matmul_f32\":{},\"shared_buffers\":{}}},\"matmul_dispatches\":{d}}},\n" ++
             "  \"threshold_note\": \"Real-asset MNIST gate uses exact IDX data and a Metal-backed KNN dot-product path by default; CPU mode is explicit-only diagnostic.\",\n" ++
@@ -71,6 +86,13 @@ pub fn main(init: std.process.Init) !void {
             "  \"throughput_images_per_sec\": {d:.3}\n" ++
             "}}\n",
         .{
+            bolt.runtime.artifact_metadata.schema_version,
+            artifact_status,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
             result.backend_label,
             args.value.data_dir,
             train_limit,
@@ -80,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
             test_limit,
             reference_validation_accuracy_pct,
             reference_minus_one_pp,
+            exact_label_parity,
             passed_reference_threshold,
             args.value.backend == .metal,
             result.metal_available,

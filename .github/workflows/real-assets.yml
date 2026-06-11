@@ -1,0 +1,107 @@
+name: Opt-in real asset gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: "Asset manifest path relative to engine/, defaulting to ../artifacts/assets/bolt-parity/asset-manifest.json"
+        required: false
+        default: "../artifacts/assets/bolt-parity/asset-manifest.json"
+        type: string
+      note:
+        description: "Optional reason for running real asset verification"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-asset-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-assets:
+    name: Real Bonsai/Q4 asset verification
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, macOS, ARM64, real-assets]
+    timeout-minutes: 180
+    env:
+      BOLT_CI_MODE: real-assets-opt-in
+      BOLT_ASSET_MANIFEST: ${{ inputs.manifest_path }}
+    steps:
+      # first-party-action-exception: actions/checkout is version-pinned rather than SHA-pinned;
+      # this opt-in workflow never runs as required default CI.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # first-party-action-exception: actions/setup-python is version-pinned rather than SHA-pinned;
+      # Python 3.11 is required by the release validator script metadata.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Record host and asset metadata
+        run: |
+          set -euo pipefail
+          echo "## Host" | tee real-asset-capability.txt
+          sw_vers | tee -a real-asset-capability.txt
+          uname -a | tee -a real-asset-capability.txt
+          echo "## Zig" | tee -a real-asset-capability.txt
+          zig version | tee -a real-asset-capability.txt
+          echo "## Manifest" | tee -a real-asset-capability.txt
+          printf 'manifest_path=%s\n' "$BOLT_ASSET_MANIFEST" | tee -a real-asset-capability.txt
+          (cd engine && shasum -a 256 "$BOLT_ASSET_MANIFEST") | tee -a real-asset-capability.txt
+
+      - name: Validate asset manifest
+        run: cd engine && zig build validate-assets -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Validate tokenizer pairing
+        run: cd engine && zig build validate-tokenizer -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Run Bonsai golden gate
+        run: cd engine && zig build run-bonsai-golden --summary all -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Run Bonsai bench gate
+        run: cd engine && zig build run-bonsai-bench --summary all -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Run Q4 golden gate
+        run: cd engine && zig build run-bonsai-q4-golden --summary all -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Run Q4 bench gate
+        run: cd engine && zig build run-bonsai-q4-bench --summary all -- "$BOLT_ASSET_MANIFEST"
+
+      - name: Run Bonsai researcher summaries
+        run: cd labrat && zig build bonsai-researcher --summary all
+
+      - name: Run Q4 researcher summaries
+        run: cd labrat && zig build bonsai-q4-researcher --summary all
+
+      - name: Validate produced release artifacts
+        run: |
+          set -euo pipefail
+          python3 scripts/release/validate_artifact.py \
+            artifacts/bolt-bonsai-readiness.json \
+            artifacts/bolt-bonsai-bench.json \
+            artifacts/bolt-q4-golden.json \
+            artifacts/bolt-q4-bench.json \
+            artifacts/labrat-bonsai-researcher.json \
+            artifacts/labrat-bonsai-q4-researcher.json
+
+      # first-party-action-exception: actions/upload-artifact is version-pinned rather than SHA-pinned;
+      # opt-in real-asset metadata is short-lived and must not include model weights.
+      - name: Upload real-asset metadata only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-asset-metadata-${{ github.run_id }}
+          path: |
+            real-asset-capability.txt
+            artifacts/bolt-bonsai-readiness.json
+            artifacts/bolt-bonsai-bench.json
+            artifacts/bolt-q4-golden.json
+            artifacts/bolt-q4-bench.json
+            artifacts/labrat-*-researcher.json
+          if-no-files-found: ignore
+          retention-days: 5

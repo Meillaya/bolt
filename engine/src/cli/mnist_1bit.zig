@@ -39,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
 
     const accuracy_pct = @as(f64, @floatFromInt(correct)) * 100.0 / @as(f64, @floatFromInt(test_limit));
     const elapsed_ms = @as(f64, @floatFromInt(std.Io.Clock.awake.now(init.io).nanoseconds - started)) / 1_000_000.0;
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-1bit --summary all");
 
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
@@ -46,7 +47,14 @@ pub fn main(init: std.process.Init) !void {
     const report = try std.fmt.allocPrint(
         allocator,
         "{{\n" ++
-            "  \"schema_version\": 1,\n" ++
+            "  \"schema_version\": \"{s}\",\n" ++
+            "  \"artifact_type\": \"engine.mnist.run_1bit\",\n" ++
+            "  \"status\": \"pass\",\n" ++
+            "  \"command\": \"{s}\",\n" ++
+            "  \"cwd\": \"{s}\",\n" ++
+            "  \"git_commit\": \"{s}\",\n" ++
+            "  \"timestamp_utc\": \"{s}\",\n" ++
+            "  \"toolchain\": {{\"zig\":\"{s}\"}},\n" ++
             "  \"backend\": \"cpu-reference-q1\",\n" ++
             "  \"dataset\": \"mnist-idx-real\",\n" ++
             "  \"quantization\": {{\"scheme\":\"q1-binary-threshold\",\"threshold\":{d:.3},\"pack_group_size\":64}},\n" ++
@@ -60,7 +68,21 @@ pub fn main(init: std.process.Init) !void {
             "  \"correctness_gates\": [\"mnist_idx_real_loaded\",\"q1_threshold_pack_cpu_reference\",\"binary_hamming_inference\"],\n" ++
             "  \"total_ms\": {d:.3}\n" ++
             "}}\n",
-        .{ threshold, train_limit, test_limit, correct, accuracy_pct, cpu_reference_checked, elapsed_ms },
+        .{
+            bolt.runtime.artifact_metadata.schema_version,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
+            threshold,
+            train_limit,
+            test_limit,
+            correct,
+            accuracy_pct,
+            cpu_reference_checked,
+            elapsed_ms,
+        },
     );
     try writeArtifact(init.io, artifact_path, report);
     try stdout.writeAll(report);

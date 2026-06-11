@@ -613,30 +613,49 @@ fn writeIds(writer: anytype, ids: []const u32) !void {
     try writer.writeByte(']');
 }
 
-fn writeReportBody(writer: anytype, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool, gate: []const u8, status: []const u8) !void {
+fn writeReportBody(writer: anytype, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, artifact_type: []const u8, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool, gate: []const u8, status: []const u8) !void {
     try writer.print(
         "{{\n" ++
-            "  \"schema_version\": 1,\n" ++
-            "  \"gate\": \"{s}\",\n" ++
+            "  \"schema_version\": \"{s}\",\n" ++
+            "  \"artifact_type\": \"{s}\",\n" ++
             "  \"status\": \"{s}\",\n" ++
+            "  \"command\": \"{s}\",\n" ++
+            "  \"cwd\": \"{s}\",\n" ++
+            "  \"git_commit\": \"{s}\",\n" ++
+            "  \"timestamp_utc\": \"{s}\",\n" ++
+            "  \"toolchain\": {{\"zig\":\"{s}\"}},\n" ++
+            "  \"manifest_digest\": \"{s}\",\n" ++
+            "  \"gate\": \"{s}\",\n" ++
             "  \"acceptance\": \"real_unquantized_transformer_golden_{s}\",\n" ++
             "  \"manifest_path\": \"{s}\",\n" ++
             "  \"config_path\": \"{s}\",\n" ++
             "  \"tokenizer_path\": \"{s}\",\n" ++
             "  \"safetensors_path\": \"{s}\",\n" ++
             "  \"readiness_pass\": {s},\n" ++
+            "  \"readiness\": {{\"passed\":{s}}},\n" ++
+            "  \"smoke\": {{\"passed\":{s}}},\n" ++
             "  \"tensor_contract\": {{\"expected\":{d},\"matched\":{d},\"missing\":{d},\"invalid\":{d},\"extra\":{d},\"tensor_count\":{d}}},\n" ++
             "  \"prompt\": \"{s}\",\n" ++
             "  \"prompt_token_ids\": ",
         .{
-            gate,
+            bolt.runtime.artifact_metadata.schema_version,
+            artifact_type,
             status,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
+            manifest_digest,
+            gate,
             if (gate_pass) "passed" else "blocked",
             manifest_path,
             paths.config_path,
             paths.tokenizer_path,
             paths.safetensors_path,
             if (readiness_pass) "true" else "false",
+            if (gate_pass) "true" else "false",
+            if (gate_pass) "true" else "false",
             report.expected_tensors,
             report.matched_tensors,
             report.missing_tensors,
@@ -664,12 +683,15 @@ fn writeReportBody(writer: anytype, manifest_path: []const u8, paths: BonsaiPath
 
 fn writeReadiness(init: std.process.Init, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, tok: bolt.tokenizer.Tokenizer, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool) !void {
     _ = tok;
+    const allocator = init.arena.allocator();
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-golden --summary all");
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
     try ensureParentDir(init.io, readiness_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, readiness_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [16384]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-readiness", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(&fw.interface, meta, manifest_digest, "engine.bonsai.readiness", manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-readiness", if (gate_pass) "pass" else "blocked");
     try fw.interface.flush();
 }
 
@@ -681,19 +703,25 @@ fn writeBlocker(init: std.process.Init, manifest_path: []const u8, paths: Bonsai
         };
         return;
     }
+    const allocator = init.arena.allocator();
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-golden --summary all");
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
     try ensureParentDir(init.io, blocker_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, blocker_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [16384]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeReportBody(&fw.interface, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(&fw.interface, meta, manifest_digest, "engine.bonsai.smoke", manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
     try fw.interface.flush();
 }
 
 fn writeStdout(init: std.process.Init, manifest_path: []const u8, paths: BonsaiPaths, report: bolt.bonsai_model.BonsaiTensorReport, prompt_ids: []const u32, probe: WeightProbe, layer_probe: PartialDecodeProbe, generation_probe: GenerationProbe, readiness_pass: bool, gate_pass: bool) !void {
+    const allocator = init.arena.allocator();
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-golden --summary all");
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
     var stdout_buffer: [16384]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
-    try writeReportBody(stdout, manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
+    try writeReportBody(stdout, meta, manifest_digest, "engine.bonsai.smoke", manifest_path, paths, report, prompt_ids, probe, layer_probe, generation_probe, readiness_pass, gate_pass, "bolt-bonsai-golden", if (gate_pass) "pass" else "blocked");
     try stdout.flush();
 }

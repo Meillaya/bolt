@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "artifact_type": "engine.mnist.run",
+  "status": "pass",
+  "command": "cd engine && zig build run",
+  "cwd": "/Users/mei/Projects/bolt/engine",
+  "git_commit": "741b502",
+  "timestamp_utc": "2026-06-10T21:34:24Z",
+  "toolchain": {"zig": "0.16.0"},
+  "details": {"selected_label_parity": true, "passed": true}
+}

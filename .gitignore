@@ -72,5 +72,9 @@ node_modules/
 reference/
 artifacts/
 
+# Source artifact schemas are versioned release contracts, not generated model output.
+!docs/artifacts/
+!docs/artifacts/**
+
 # Real datasets/models are local final-gate assets.
 data/

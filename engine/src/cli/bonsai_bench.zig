@@ -1,4 +1,5 @@
 const std = @import("std");
+const bolt = @import("bolt");
 const bonsai_golden = @import("bonsai_golden.zig");
 
 const golden_artifact_path = "../artifacts/bolt-bonsai-readiness.json";
@@ -18,8 +19,10 @@ pub fn main(init: std.process.Init) !void {
     const golden_pass = artifactHasPassStatus(parsed.value) and artifactHasReferenceMatch(parsed.value);
     const elapsed: u64 = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds - started);
     const digest_hex = try fileSha256Hex(init.io, allocator, golden_artifact_path);
+    const manifest_digest = try bolt.runtime.artifact_metadata.fileSha256Hex(init.io, allocator, manifest_path);
+    const meta = try bolt.runtime.artifact_metadata.capture(allocator, init.io, "zig build run-bonsai-bench --summary all");
     const bench = if (golden_pass) try bonsai_golden.runDecodeBenchmark(init.io, allocator, manifest_path) else bonsai_golden.BonsaiDecodeBenchmark{ .prompt_tokens = 0, .generated_tokens = 0, .matches_reference = false, .elapsed_ns = 0, .layers_per_token = 0 };
-    try writeArtifact(init, golden_pass and bench.matches_reference, elapsed, stat.size, digest_hex, bench);
+    try writeArtifact(init, meta, manifest_digest, golden_pass and bench.matches_reference, elapsed, stat.size, digest_hex, bench);
     if (!golden_pass) return error.BonsaiGoldenGateRequiredBeforeBench;
     if (!bench.matches_reference) return error.BonsaiBenchmarkDecodeMismatch;
 }
@@ -82,36 +85,49 @@ fn fileSha256Hex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
     return try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(digest, .lower)});
 }
 
-fn writeArtifact(init: std.process.Init, pass: bool, elapsed_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: bonsai_golden.BonsaiDecodeBenchmark) !void {
+fn writeArtifact(init: std.process.Init, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, pass: bool, elapsed_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: bonsai_golden.BonsaiDecodeBenchmark) !void {
     try ensureParentDir(init.io, bench_artifact_path);
     var file = try std.Io.Dir.cwd().createFile(init.io, bench_artifact_path, .{ .truncate = true });
     defer file.close(init.io);
     var buf: [4096]u8 = undefined;
     var fw = file.writer(init.io, &buf);
-    try writeJson(&fw.interface, pass, elapsed_ns, artifact_size, digest_hex, bench);
+    try writeJson(&fw.interface, meta, manifest_digest, pass, elapsed_ns, artifact_size, digest_hex, bench);
     try fw.interface.flush();
 
     var stdout_buf: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(init.io, &stdout_buf);
-    try writeJson(&stdout.interface, pass, elapsed_ns, artifact_size, digest_hex, bench);
+    try writeJson(&stdout.interface, meta, manifest_digest, pass, elapsed_ns, artifact_size, digest_hex, bench);
     try stdout.interface.flush();
 }
 
-fn writeJson(w: anytype, pass: bool, elapsed_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: bonsai_golden.BonsaiDecodeBenchmark) !void {
+fn writeJson(w: anytype, meta: bolt.runtime.artifact_metadata.Metadata, manifest_digest: []const u8, pass: bool, elapsed_ns: u64, artifact_size: u64, digest_hex: []const u8, bench: bonsai_golden.BonsaiDecodeBenchmark) !void {
     try w.print(
         "{{\n" ++
-            "  \"schema_version\":1,\n" ++
-            "  \"gate\":\"bolt-bonsai-bench\",\n" ++
+            "  \"schema_version\":\"{s}\",\n" ++
+            "  \"artifact_type\":\"engine.bonsai.bench\",\n" ++
             "  \"status\":\"{s}\",\n" ++
-            "  \"correctness_gate\":{{\"golden_artifact\":\"{s}\",\"required\":true,\"passed\":{s},\"artifact_size_bytes\":{d},\"artifact_sha256\":\"{s}\"}},\n" ++
+            "  \"command\":\"{s}\",\n" ++
+            "  \"cwd\":\"{s}\",\n" ++
+            "  \"git_commit\":\"{s}\",\n" ++
+            "  \"timestamp_utc\":\"{s}\",\n" ++
+            "  \"toolchain\":{{\"zig\":\"{s}\"}},\n" ++
+            "  \"manifest_digest\":\"{s}\",\n" ++
+            "  \"benchmark\":{{\"passed\":{s},\"golden_artifact\":\"{s}\",\"required\":true,\"artifact_size_bytes\":{d},\"artifact_sha256\":\"{s}\"}},\n" ++
             "  \"timing\":{{\"golden_artifact_check_ns\":{d},\"real_decode_benchmark_ns\":{d}}},\n" ++
             "  \"workload\":{{\"kind\":\"real_bonsai_f16_decode\",\"prompt_tokens\":{d},\"generated_tokens\":{d},\"matches_reference\":{s},\"layers_per_token\":{d}}},\n" ++
             "  \"benchmark_claim\":\"{s}\"\n" ++
             "}}\n",
         .{
+            bolt.runtime.artifact_metadata.schema_version,
             if (pass) "pass" else "blocked",
-            golden_artifact_path,
+            meta.command,
+            meta.cwd,
+            meta.git_commit,
+            meta.timestamp_utc,
+            meta.zig_version,
+            manifest_digest,
             if (pass) "true" else "false",
+            golden_artifact_path,
             artifact_size,
             digest_hex,
             elapsed_ns,

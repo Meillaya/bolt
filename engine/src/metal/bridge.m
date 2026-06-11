@@ -105,6 +105,19 @@ static BOOL bolt_validate_u32(size_t value, NSString *label, char **error_out) {
     return YES;
 }
 
+static BOOL bolt_checked_mul_size(size_t left, size_t right, size_t *out, NSString *label, char **error_out) {
+    if (left != 0 && right > SIZE_MAX / left) {
+        bolt_set_error(error_out, [NSString stringWithFormat:@"%@ size calculation overflowed", label]);
+        return NO;
+    }
+    *out = left * right;
+    return YES;
+}
+
+static BOOL bolt_checked_byte_size(size_t count, size_t element_size, size_t *out, NSString *label, char **error_out) {
+    return bolt_checked_mul_size(count, element_size, out, label, error_out);
+}
+
 static BOOL bolt_encode_buffer_pipeline(
     BoltMetalRuntime *runtime,
     id<MTLComputePipelineState> pipeline,
@@ -123,6 +136,9 @@ static BOOL bolt_encode_buffer_pipeline(
     }
     if (pipeline == nil) {
         bolt_set_error(error_out, @"missing Metal compute pipeline");
+        return NO;
+    }
+    if (!bolt_validate_u32(count, @"element count", error_out)) {
         return NO;
     }
     if (!bolt_validate_buffer_count(left_buffer, count, @"left", error_out)) {
@@ -263,11 +279,18 @@ bool bolt_metal_validate_dispatch_dimensions(
         bolt_set_error(error_out, @"Metal threadgroup dimensions must be non-zero");
         return false;
     }
-    if (threads_x > SIZE_MAX / threads_y || threads_x * threads_y > SIZE_MAX / threads_z) {
-        bolt_set_error(error_out, @"Metal threadgroup dimensions overflow");
+    size_t grid_xy = 0;
+    size_t grid_count = 0;
+    if (!bolt_checked_mul_size(grid_x, grid_y, &grid_xy, @"Metal dispatch grid", error_out) ||
+        !bolt_checked_mul_size(grid_xy, grid_z, &grid_count, @"Metal dispatch grid", error_out)) {
         return false;
     }
-    const size_t thread_count = threads_x * threads_y * threads_z;
+    size_t threads_xy = 0;
+    size_t thread_count = 0;
+    if (!bolt_checked_mul_size(threads_x, threads_y, &threads_xy, @"Metal threadgroup dimensions", error_out) ||
+        !bolt_checked_mul_size(threads_xy, threads_z, &thread_count, @"Metal threadgroup dimensions", error_out)) {
+        return false;
+    }
     if (thread_count > max_threads_per_threadgroup) {
         bolt_set_error(error_out, @"Metal threadgroup dimensions exceed pipeline maximum");
         return false;
@@ -384,7 +407,10 @@ void *bolt_metal_buffer_create(void *context_handle, size_t count, char **error_
             return NULL;
         }
 
-        const NSUInteger byte_count = count * sizeof(float);
+        size_t byte_count = 0;
+        if (!bolt_checked_byte_size(count, sizeof(float), &byte_count, @"Metal float buffer", error_out)) {
+            return NULL;
+        }
         id<MTLBuffer> metal_buffer = [runtime.device newBufferWithLength:byte_count
                                                                  options:MTLResourceStorageModeShared];
         if (metal_buffer == nil) {
@@ -555,9 +581,14 @@ bool bolt_metal_matmul_buffer_f32(
             return NO;
         }
 
-        const size_t left_count = rows * inner;
-        const size_t right_count = inner * cols;
-        const size_t output_count = rows * cols;
+        size_t left_count = 0;
+        size_t right_count = 0;
+        size_t output_count = 0;
+        if (!bolt_checked_mul_size(rows, inner, &left_count, @"matmul left", error_out) ||
+            !bolt_checked_mul_size(inner, cols, &right_count, @"matmul right", error_out) ||
+            !bolt_checked_mul_size(rows, cols, &output_count, @"matmul output", error_out)) {
+            return NO;
+        }
         if (!bolt_validate_buffer_count(left_buffer, left_count, @"left", error_out) ||
             !bolt_validate_buffer_count(right_buffer, right_count, @"right", error_out) ||
             !bolt_validate_buffer_count(output_buffer, output_count, @"output", error_out)) {
@@ -644,10 +675,16 @@ bool bolt_metal_qmv_buffer_f32(
             !bolt_validate_u32(group_size, @"qmv group size", error_out)) {
             return NO;
         }
-        const size_t packed_bytes = rows * (cols / 8);
-        const size_t scale_count = rows * ((cols + group_size - 1) / group_size);
+        size_t packed_bytes = 0;
+        size_t scale_count = 0;
+        size_t scale_bytes = 0;
+        if (!bolt_checked_mul_size(rows, cols / 8, &packed_bytes, @"qmv packed_bits", error_out) ||
+            !bolt_checked_mul_size(rows, cols / group_size, &scale_count, @"qmv scales", error_out) ||
+            !bolt_checked_byte_size(scale_count, sizeof(uint16_t), &scale_bytes, @"qmv scales", error_out)) {
+            return NO;
+        }
         if (!bolt_validate_buffer_bytes(packed_bits_buffer, packed_bytes, @"qmv packed_bits", error_out) ||
-            !bolt_validate_buffer_bytes(scales_buffer, scale_count * sizeof(uint16_t), @"qmv scales", error_out) ||
+            !bolt_validate_buffer_bytes(scales_buffer, scale_bytes, @"qmv scales", error_out) ||
             !bolt_validate_buffer_count(input_buffer, cols, @"qmv input", error_out) ||
             !bolt_validate_buffer_count(output_buffer, rows, @"qmv output", error_out)) {
             return NO;
@@ -734,11 +771,17 @@ bool bolt_metal_q4mv_buffer_f32(
             !bolt_validate_u32(group_size, @"q4mv group size", error_out)) {
             return NO;
         }
-        const size_t packed_bytes = rows * (cols / 2);
-        const size_t group_count = rows * (cols / group_size);
+        size_t packed_bytes = 0;
+        size_t group_count = 0;
+        size_t group_bytes = 0;
+        if (!bolt_checked_mul_size(rows, cols / 2, &packed_bytes, @"q4mv packed_nibbles", error_out) ||
+            !bolt_checked_mul_size(rows, cols / group_size, &group_count, @"q4mv groups", error_out) ||
+            !bolt_checked_byte_size(group_count, sizeof(uint16_t), &group_bytes, @"q4mv groups", error_out)) {
+            return NO;
+        }
         if (!bolt_validate_buffer_bytes(packed_buffer, packed_bytes, @"q4mv packed_nibbles", error_out) ||
-            !bolt_validate_buffer_bytes(scales_buffer, group_count * sizeof(uint16_t), @"q4mv scales", error_out) ||
-            !bolt_validate_buffer_bytes(biases_buffer, group_count * sizeof(uint16_t), @"q4mv biases", error_out) ||
+            !bolt_validate_buffer_bytes(scales_buffer, group_bytes, @"q4mv scales", error_out) ||
+            !bolt_validate_buffer_bytes(biases_buffer, group_bytes, @"q4mv biases", error_out) ||
             !bolt_validate_buffer_count(input_buffer, cols, @"q4mv input", error_out) ||
             !bolt_validate_buffer_count(output_buffer, rows, @"q4mv output", error_out)) {
             return NO;
@@ -820,7 +863,10 @@ bool bolt_metal_bias_add_buffer_f32(
             return NO;
         }
 
-        const size_t element_count = rows * cols;
+        size_t element_count = 0;
+        if (!bolt_checked_mul_size(rows, cols, &element_count, @"bias_add elements", error_out)) {
+            return NO;
+        }
         if (!bolt_validate_buffer_count(input_buffer, element_count, @"input", error_out) ||
             !bolt_validate_buffer_count(bias_buffer, cols, @"bias", error_out) ||
             !bolt_validate_buffer_count(output_buffer, element_count, @"output", error_out)) {

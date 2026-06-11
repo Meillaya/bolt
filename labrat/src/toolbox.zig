@@ -27,6 +27,7 @@
 //!   history             Show recent experiments
 
 const std = @import("std");
+const api = @import("api_client.zig");
 const Allocator = std.mem.Allocator;
 const tools = @import("tools.zig");
 
@@ -410,31 +411,55 @@ fn runAndReport(
         !result.timed_out and
         !result.spawn_error;
 
-    if (success) {
-        const json = try std.fmt.allocPrint(
+    const exit_str = if (result.exit_code) |code|
+        try std.fmt.allocPrint(arena, "{d}", .{code})
+    else
+        "null";
+    const compiled_str = if (tools.eql(result_key, "compiled"))
+        if (success) "true" else "false"
+    else
+        "null";
+    const passed_str = if (tools.eql(result_key, "passed"))
+        if (success) "true" else "false"
+    else
+        "null";
+    const failure_reason_str = if (success)
+        "null"
+    else blk: {
+        const escaped = try tools.truncateAndEscape(
             arena,
-            "{{\"status\": \"ok\", " ++
-                "\"{s}\": true}}\n",
-            .{result_key},
+            result.output,
+            4000,
         );
-        try tools.writeStdout(json);
-        return;
-    }
-
-    const escaped = try tools.truncateAndEscape(
-        arena,
-        result.output,
-        4000,
-    );
+        break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{escaped});
+    };
     const json = try std.fmt.allocPrint(
         arena,
-        "{{\"status\": \"ok\", " ++
-            "\"{s}\": false, " ++
-            "\"{s}\": \"{s}\"}}\n",
-        .{ result_key, error_key, escaped },
+        "{{\"status\": \"{s}\", " ++
+            "\"exit_code\": {s}, " ++
+            "\"compiled\": {s}, " ++
+            "\"passed\": {s}, " ++
+            "\"failure_reason\": {s}}}\n",
+        .{
+            if (success) "ok" else "error",
+            exit_str,
+            compiled_str,
+            passed_str,
+            failure_reason_str,
+        },
     );
-    std.debug.assert(json.len > 0);
+    const parsed = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        json,
+        .{},
+    );
+    validateCommandWrapperReport(parsed) catch unreachable;
     try tools.writeStdout(json);
+    if (!success) {
+        _ = error_key;
+        std.process.exit(1);
+    }
 }
 
 fn toolCheck(
@@ -463,6 +488,82 @@ fn toolTest(
         "passed",
         "output",
     );
+}
+
+const CommandWrapperValidationError = error{
+    MissingWrapperField,
+    UnexpectedWrapperField,
+    InvalidWrapperField,
+    InconsistentSuccessStatus,
+    MissingFailureReason,
+};
+
+fn validateCommandWrapperReport(value: std.json.Value) CommandWrapperValidationError!void {
+    if (value != .object) return error.InvalidWrapperField;
+
+    const obj = value.object;
+    const status = jsonStringField(obj, "status") orelse return error.MissingWrapperField;
+    const compiled = jsonOptionalBoolField(obj, "compiled") catch |err| return err;
+    const passed = jsonOptionalBoolField(obj, "passed") catch |err| return err;
+
+    if (tools.eql(status, "ok")) {
+        if (compiled == false or passed == false) return error.InconsistentSuccessStatus;
+    } else if (!tools.eql(status, "error")) {
+        return error.InvalidWrapperField;
+    }
+
+    if (obj.count() != 5) return error.UnexpectedWrapperField;
+    _ = jsonOptionalIntField(obj, "exit_code") catch |err| return err;
+    const failure_reason = jsonOptionalStringField(obj, "failure_reason") catch |err| return err;
+
+    if (tools.eql(status, "error") and failure_reason == null) {
+        return error.MissingFailureReason;
+    }
+}
+
+fn jsonStringField(
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn jsonOptionalStringField(
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) CommandWrapperValidationError!?[]const u8 {
+    const value = obj.get(key) orelse return error.MissingWrapperField;
+    return switch (value) {
+        .null => null,
+        .string => value.string,
+        else => error.InvalidWrapperField,
+    };
+}
+
+fn jsonOptionalBoolField(
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) CommandWrapperValidationError!?bool {
+    const value = obj.get(key) orelse return error.MissingWrapperField;
+    return switch (value) {
+        .null => null,
+        .bool => value.bool,
+        else => error.InvalidWrapperField,
+    };
+}
+
+fn jsonOptionalIntField(
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) CommandWrapperValidationError!?i64 {
+    const value = obj.get(key) orelse return error.MissingWrapperField;
+    return switch (value) {
+        .null => null,
+        .integer => value.integer,
+        else => error.InvalidWrapperField,
+    };
 }
 
 // ============================================================
@@ -1395,7 +1496,9 @@ pub fn extractLineRange(
 /// suitable for directory names: "2025-01-15T14-30-00".
 /// Colons are replaced with dashes for filesystem safety.
 fn formatTimestamp(buf: *[32]u8) []const u8 {
-    const ts: u64 = @intCast(std.time.timestamp());
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    const ts: u64 = @intCast(std.Io.Timestamp.now(io_state.io(), .real).toSeconds());
     std.debug.assert(ts > 0);
 
     const es = std.time.epoch.EpochSeconds{
@@ -1434,7 +1537,9 @@ fn formatTimestamp(buf: *[32]u8) []const u8 {
 /// Format the current UTC time as ISO 8601 with colons:
 /// "2025-01-15T14:30:00Z".  Used for JSONL records.
 fn formatTimestampUtc(buf: *[32]u8) []const u8 {
-    const ts: u64 = @intCast(std.time.timestamp());
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    const ts: u64 = @intCast(std.Io.Timestamp.now(io_state.io(), .real).toSeconds());
     std.debug.assert(ts > 0);
 
     const es = std.time.epoch.EpochSeconds{
@@ -1906,7 +2011,7 @@ fn toolRunCmd(
         command,
         config.project_root,
     );
-    const output = truncateToolOutput(result.output);
+    const output = try redactToolOutputForRelease(arena, result.output);
     const escaped = try tools.jsonEscape(arena, output);
     const exit_str = if (result.exit_code) |code|
         try std.fmt.allocPrint(
@@ -2074,7 +2179,7 @@ fn emitShellFailure(
     tag: []const u8,
     result: ShellResult,
 ) !void {
-    const output = truncateToolOutput(result.output);
+    const output = try redactToolOutputForRelease(arena, result.output);
     const escaped = try tools.jsonEscape(arena, output);
     const exit_str = if (result.exit_code) |code|
         try std.fmt.allocPrint(arena, "{d}", .{code})
@@ -2104,6 +2209,14 @@ fn combineOutput(
         "{s}\n{s}",
         .{ stdout, stderr },
     ) catch stdout;
+}
+
+fn redactToolOutputForRelease(
+    arena: Allocator,
+    output: []const u8,
+) ![]const u8 {
+    const redacted = try api.redactSecrets(arena, output);
+    return truncateToolOutput(redacted);
 }
 
 fn truncateToolOutput(output: []const u8) []const u8 {
@@ -2160,7 +2273,7 @@ fn toolExperimentStart(
     );
     const result = runShellCapture(arena, cmd);
     if (result.exit_code == null or result.exit_code.? != 0 or result.timed_out or result.spawn_error) {
-        const output = truncateToolOutput(result.output);
+        const output = try redactToolOutputForRelease(arena, result.output);
         const escaped = try tools.jsonEscape(arena, output);
         const json = try std.fmt.allocPrint(
             arena,
@@ -2173,9 +2286,10 @@ fn toolExperimentStart(
         try tools.writeStdout(json);
         std.process.exit(1);
     }
+    const output = try redactToolOutputForRelease(arena, result.output);
     const escaped = try tools.jsonEscape(
         arena,
-        result.output,
+        output,
     );
     const json = try std.fmt.allocPrint(
         arena,
@@ -2196,9 +2310,10 @@ fn toolDiff(arena: Allocator) !void {
         arena,
         "git --no-pager diff",
     );
+    const output = try redactToolOutputForRelease(arena, result.output);
     const escaped = try tools.jsonEscape(
         arena,
-        result.output,
+        output,
     );
     const json = try std.fmt.allocPrint(
         arena,
@@ -2443,7 +2558,7 @@ fn appendEnrichedExperiment(
     var ts_buf: [32]u8 = undefined;
     const ts = formatTimestampUtc(&ts_buf);
 
-    const trimmed = summary;
+    const trimmed = api.redactSecrets(arena, summary) catch summary;
 
     var buf: std.ArrayList(u8) = .empty;
 
@@ -2515,13 +2630,20 @@ fn appendEnrichedExperiment(
         config.fs_root,
         path_rel,
     ) catch return;
-    const file = std.Io.Dir.cwd().createFile(
-        fs_path,
-        .{ .truncate = false },
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+    const parent = std.fs.path.dirname(fs_path) orelse return;
+    std.Io.Dir.cwd().createDirPath(io, parent) catch return;
+    const existing = tools.readFile(arena, fs_path) catch "";
+    const combined = std.fmt.allocPrint(
+        arena,
+        "{s}{s}",
+        .{ existing, buf.items },
     ) catch return;
-    defer file.close();
-    file.seekFromEnd(0) catch return;
-    file.writeAll(buf.items) catch return;
+    const file = std.Io.Dir.cwd().createFile(io, fs_path, .{}) catch return;
+    defer file.close(io);
+    file.writeStreamingAll(io, combined) catch return;
 }
 
 /// Parse bench JSON and append each field (except
@@ -2952,6 +3074,9 @@ fn isDeniedPath(path: []const u8) bool {
     if (tools.startsWith(path, ".omx/") and
         !isReadonlyLedgerPath(path))
     {
+        return true;
+    }
+    if (path[0] == '.' and !isReadonlyLedgerPath(path)) {
         return true;
     }
     return false;
@@ -3629,10 +3754,109 @@ test "labrat path guard rejects symlink components" {
     try std.testing.expect(!isAllowedWritePath(&config, "zig-cache/tmp/labrat-sandbox/link/file.txt"));
 }
 
+test "release sandbox malicious cases are denied and redacted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const fixture = try tools.readFile(
+        arena,
+        "testdata/sandbox/malicious-cases.json",
+    );
+    const parsed = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        fixture,
+        .{},
+    );
+    const root = parsed.object;
+
+    const config = ToolboxConfig{
+        .name = "release-regression",
+        .project_root = ".",
+        .fs_root = ".",
+        .write_scope = &.{"zig-cache/tmp/labrat-release-sandbox/"},
+        .read_scope = &.{"zig-cache/tmp/labrat-release-sandbox/"},
+        .read_files = &.{},
+        .check_command = &.{ "zig", "build" },
+        .test_command = &.{ "zig", "build", "test" },
+        .bench_command = &.{ "zig", "build", "run" },
+        .history_dir = "zig-cache/tmp/labrat-release-history/test",
+    };
+
+    var io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+    try std.Io.Dir.cwd().createDirPath(io, "zig-cache/tmp/labrat-release-sandbox");
+    std.Io.Dir.cwd().deleteFile(io, "zig-cache/tmp/labrat-release-sandbox/link") catch {};
+    try std.Io.Dir.cwd().symLink(io, "/tmp", "zig-cache/tmp/labrat-release-sandbox/link", .{});
+    defer std.Io.Dir.cwd().deleteFile(io, "zig-cache/tmp/labrat-release-sandbox/link") catch {};
+
+    const paths = root.get("paths").?.array.items;
+    for (paths) |case_value| {
+        const case_obj = case_value.object;
+        const path = case_obj.get("path").?.string;
+        const expect_read = case_obj.get("read").?.bool;
+        const expect_write = case_obj.get("write").?.bool;
+        try std.testing.expectEqual(expect_read, isAllowedReadPath(&config, path));
+        try std.testing.expectEqual(expect_write, isAllowedWritePath(&config, path));
+    }
+
+    const commands = root.get("commands").?.array.items;
+    for (commands) |case_value| {
+        const case_obj = case_value.object;
+        const command = case_obj.get("command").?.string;
+        const expect_allowed = case_obj.get("allowed").?.bool;
+        try std.testing.expectEqual(expect_allowed, isAllowedRunCommand(command));
+    }
+
+    const secret_output = root.get("secret_output").?.string;
+    const redacted = try redactToolOutputForRelease(arena, secret_output);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-" ++ "test-secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "Authorization: [REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "Cookie: [REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "Bearer [REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "\"api_token\":\"[REDACTED]\"") != null);
+
+    try std.Io.Dir.cwd().createDirPath(io, config.history_dir);
+    const history_path = "zig-cache/tmp/labrat-release-history/test/experiments.jsonl";
+    std.Io.Dir.cwd().deleteFile(io, history_path) catch {};
+    appendEnrichedExperiment(
+        &config,
+        arena,
+        1,
+        "release",
+        "redact",
+        secret_output,
+        null,
+    );
+    const history = try tools.readFile(arena, history_path);
+    try std.testing.expect(std.mem.indexOf(u8, history, "sk-" ++ "test-secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, history, "[REDACTED]") != null);
+}
+
 test "labrat process runner reports timeout or nonzero as non-ok" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const result = runProcessWithTimeout(arena, &.{ "/bin/sh", "-c", "exit 7" }, ".", 5);
     try std.testing.expectEqual(@as(?u32, 7), result.exit_code);
+}
+
+test "wrapper rejects ok status with failed nested compile/test result" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const parsed = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "{\"status\":\"ok\",\"compiled\":false,\"passed\":false}",
+        .{},
+    );
+
+    try std.testing.expectError(
+        error.InconsistentSuccessStatus,
+        validateCommandWrapperReport(parsed),
+    );
 }

@@ -137,6 +137,26 @@ extern fn bolt_metal_softmax_buffer_f32(
 
 const embedded_kernels = @embedFile("kernels.metal");
 
+fn checkedAddSize(left: usize, right: usize) !usize {
+    const result = @addWithOverflow(left, right);
+    if (result[1] != 0) return error.DimensionOverflow;
+    return result[0];
+}
+
+fn checkedMulSize(left: usize, right: usize) !usize {
+    const result = @mulWithOverflow(left, right);
+    if (result[1] != 0) return error.DimensionOverflow;
+    return result[0];
+}
+
+fn checkedByteSize(count: usize, comptime Element: type) !usize {
+    return checkedMulSize(count, @sizeOf(Element));
+}
+
+fn checkedU32Dimension(value: usize) !void {
+    if (value > std.math.maxInt(u32)) return error.DimensionOverflow;
+}
+
 pub const DispatchDimensions = struct {
     grid_x: usize,
     grid_y: usize = 1,
@@ -321,6 +341,7 @@ pub const Context = struct {
     pub fn createSharedBufferF32(self: Context, len: usize) !SharedBufferF32 {
         if (self.handle == null) return error.UninitializedContext;
         if (len == 0) return error.EmptyBuffer;
+        _ = try checkedByteSize(len, f32);
 
         var error_message: ?[*:0]u8 = null;
         const handle = bolt_metal_buffer_create(self.handle.?, len, &error_message) orelse {
@@ -350,14 +371,14 @@ pub const Context = struct {
 
     pub fn createHalfBuffer(self: Context, len: usize) !HalfBuffer {
         return .{
-            .bytes = try self.createSharedBufferBytes(len * @sizeOf(u16)),
+            .bytes = try self.createSharedBufferBytes(try checkedByteSize(len, u16)),
             .len = len,
         };
     }
 
     pub fn createPackedBuffer(self: Context, word_count: usize) !PackedBuffer {
         return .{
-            .bytes = try self.createSharedBufferBytes(word_count * @sizeOf(u32)),
+            .bytes = try self.createSharedBufferBytes(try checkedByteSize(word_count, u32)),
             .word_count = word_count,
         };
     }
@@ -365,8 +386,9 @@ pub const Context = struct {
     pub fn createQ4Buffer(self: Context, rows: usize, cols: usize, group_size: usize) !Q4Buffer {
         if (rows == 0 or cols == 0 or group_size == 0) return error.EmptyBuffer;
         if (cols % group_size != 0) return error.InvalidGroupSize;
-        const packed_bytes = rows * ((cols + 1) / 2);
-        const group_count = rows * (cols / group_size);
+        const packed_cols = (try checkedAddSize(cols, 1)) / 2;
+        const packed_bytes = try checkedMulSize(rows, packed_cols);
+        const group_count = try checkedMulSize(rows, cols / group_size);
         var packed_nibbles = try self.createSharedBufferBytes(packed_bytes);
         errdefer packed_nibbles.deinit();
         var scales_bf16 = try self.createHalfBuffer(group_count);
@@ -389,6 +411,8 @@ pub const Context = struct {
     }
 
     pub fn validateDispatchDimensions(_: Context, dims: DispatchDimensions, max_threads_per_threadgroup: usize) !void {
+        _ = try checkedMulSize(try checkedMulSize(dims.grid_x, dims.grid_y), dims.grid_z);
+        _ = try checkedMulSize(try checkedMulSize(dims.threads_x, dims.threads_y), dims.threads_z);
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_validate_dispatch_dimensions(
             dims.grid_x,
@@ -413,6 +437,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len != output.len) return error.LengthMismatch;
         if (input.len == 0) return;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_copy_buffer_f32(
@@ -436,6 +461,7 @@ pub const Context = struct {
         if (left.handle == null or right.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (left.len != right.len or left.len != output.len) return error.LengthMismatch;
         if (left.len == 0) return;
+        try checkedU32Dimension(left.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_add_buffer_f32(
@@ -462,7 +488,13 @@ pub const Context = struct {
         if (self.handle == null) return error.UninitializedContext;
         if (left.handle == null or right.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (rows == 0 or cols == 0 or inner == 0) return error.EmptyBuffer;
-        if (left.len != rows * inner or right.len != inner * cols or output.len != rows * cols) {
+        try checkedU32Dimension(rows);
+        try checkedU32Dimension(cols);
+        try checkedU32Dimension(inner);
+        const left_count = try checkedMulSize(rows, inner);
+        const right_count = try checkedMulSize(inner, cols);
+        const output_count = try checkedMulSize(rows, cols);
+        if (left.len != left_count or right.len != right_count or output.len != output_count) {
             return error.LengthMismatch;
         }
 
@@ -495,7 +527,12 @@ pub const Context = struct {
         if (packed_bits.handle == null or scales.bytes.handle == null or input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (rows == 0 or cols == 0 or group_size == 0) return error.EmptyBuffer;
         if (cols % group_size != 0 or cols % 32 != 0) return error.InvalidGroupSize;
-        if (packed_bits.byte_len < rows * (cols / 8) or scales.len < rows * (cols / group_size) or input.len != cols or output.len != rows) {
+        try checkedU32Dimension(rows);
+        try checkedU32Dimension(cols);
+        try checkedU32Dimension(group_size);
+        const packed_bytes = try checkedMulSize(rows, cols / 8);
+        const scale_count = try checkedMulSize(rows, cols / group_size);
+        if (packed_bits.byte_len < packed_bytes or scales.len < scale_count or input.len != cols or output.len != rows) {
             return error.LengthMismatch;
         }
 
@@ -525,6 +562,15 @@ pub const Context = struct {
         if (q4.packed_nibbles.handle == null or q4.scales_bf16.bytes.handle == null or q4.biases_bf16.bytes.handle == null or input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (q4.rows == 0 or q4.cols == 0 or q4.group_size == 0) return error.EmptyBuffer;
         if (q4.cols % q4.group_size != 0 or q4.cols % 2 != 0) return error.InvalidGroupSize;
+        try checkedU32Dimension(q4.rows);
+        try checkedU32Dimension(q4.cols);
+        try checkedU32Dimension(q4.group_size);
+        const packed_bytes = try checkedMulSize(q4.rows, q4.cols / 2);
+        const group_count = try checkedMulSize(q4.rows, q4.cols / q4.group_size);
+        const group_byte_count = try checkedByteSize(group_count, u16);
+        try q4.packed_nibbles.validateBinding(packed_bytes);
+        try q4.scales_bf16.bytes.validateBinding(group_byte_count);
+        try q4.biases_bf16.bytes.validateBinding(group_byte_count);
         if (input.len != q4.cols or output.len != q4.rows) return error.LengthMismatch;
 
         var error_message: ?[*:0]u8 = null;
@@ -555,7 +601,10 @@ pub const Context = struct {
         if (self.handle == null) return error.UninitializedContext;
         if (input.handle == null or bias.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (rows == 0 or cols == 0) return error.EmptyBuffer;
-        if (input.len != rows * cols or bias.len != cols or output.len != rows * cols) {
+        try checkedU32Dimension(rows);
+        try checkedU32Dimension(cols);
+        const element_count = try checkedMulSize(rows, cols);
+        if (input.len != element_count or bias.len != cols or output.len != element_count) {
             return error.LengthMismatch;
         }
 
@@ -582,6 +631,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len != output.len) return error.LengthMismatch;
         if (input.len == 0) return error.EmptyBuffer;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_relu_buffer_f32(
@@ -604,6 +654,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len != output.len) return error.LengthMismatch;
         if (input.len == 0) return error.EmptyBuffer;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_sigmoid_buffer_f32(
@@ -626,6 +677,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len != output.len) return error.LengthMismatch;
         if (input.len == 0) return error.EmptyBuffer;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_tanh_buffer_f32(
@@ -648,6 +700,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len == 0) return error.EmptyBuffer;
         if (output.len != 1) return error.LengthMismatch;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_reduce_sum_buffer_f32(
@@ -670,6 +723,7 @@ pub const Context = struct {
         if (input.handle == null or output.handle == null) return error.UninitializedBuffer;
         if (input.len == 0) return error.EmptyBuffer;
         if (input.len != output.len) return error.LengthMismatch;
+        try checkedU32Dimension(input.len);
 
         var error_message: ?[*:0]u8 = null;
         const ok = bolt_metal_softmax_buffer_f32(
@@ -751,7 +805,10 @@ pub const Context = struct {
         inner: usize,
     ) !void {
         if (rows == 0 or cols == 0 or inner == 0) return error.EmptyBuffer;
-        if (left.len != rows * inner or right.len != inner * cols or output.len != rows * cols) {
+        const left_count = try checkedMulSize(rows, inner);
+        const right_count = try checkedMulSize(inner, cols);
+        const output_count = try checkedMulSize(rows, cols);
+        if (left.len != left_count or right.len != right_count or output.len != output_count) {
             return error.LengthMismatch;
         }
 
@@ -778,7 +835,8 @@ pub const Context = struct {
         cols: usize,
     ) !void {
         if (rows == 0 or cols == 0) return error.EmptyBuffer;
-        if (input.len != rows * cols or bias.len != cols or output.len != rows * cols) {
+        const element_count = try checkedMulSize(rows, cols);
+        if (input.len != element_count or bias.len != cols or output.len != element_count) {
             return error.LengthMismatch;
         }
 
@@ -1114,6 +1172,21 @@ test "metal bridge validates kernel lookup and dispatch dimensions" {
         .grid_x = 16,
         .threads_x = 2048,
     }, 1024));
+}
+
+test "metal sizing rejects overflowing dimensions" {
+    const max = std.math.maxInt(usize);
+    var context = Context{};
+    var empty_output: [0]f32 = .{};
+
+    try std.testing.expectError(error.DimensionOverflow, context.validateDispatchDimensions(.{
+        .grid_x = max,
+        .grid_y = 2,
+        .threads_x = 1,
+    }, 1024));
+    try std.testing.expectError(error.DimensionOverflow, context.matMulF32(&.{}, &.{}, &empty_output, max, 2, 1));
+    try std.testing.expectError(error.DimensionOverflow, context.biasAddF32(&.{}, &.{}, &empty_output, max, 2));
+    try std.testing.expectError(error.DimensionOverflow, context.createQ4Buffer(max, 2, 1));
 }
 
 test "metal qmv dispatch executes reference q1 contract" {

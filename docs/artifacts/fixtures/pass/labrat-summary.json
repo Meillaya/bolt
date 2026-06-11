@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "artifact_type": "labrat.summary",
+  "status": "pass",
+  "command": "cd labrat && zig build researcher-smoke",
+  "cwd": "/Users/mei/Projects/bolt/labrat",
+  "git_commit": "741b502",
+  "timestamp_utc": "2026-06-10T21:34:24Z",
+  "toolchain": {"zig": "0.16.0"},
+  "summary": {"passed": true}
+}

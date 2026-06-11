@@ -15,6 +15,7 @@ pub const safetensors = @import("safetensors.zig");
 pub const q4 = @import("q4.zig");
 pub const network = @import("network.zig");
 pub const runtime = struct {
+    pub const artifact_metadata = @import("runtime/artifact_metadata.zig");
     pub const debug_reports = @import("runtime/debug_reports.zig");
     pub const llm_assets = @import("runtime/llm_assets.zig");
     pub const mnist_assets = @import("runtime/mnist_assets.zig");

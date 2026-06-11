@@ -25,14 +25,15 @@ pub const LiveConfig = struct {
 };
 
 pub fn liveEnabled(config: LiveConfig) bool {
-    return config.allow_live and config.api_key.len > 0 and config.provider.len > 0;
+    _ = config;
+    return false;
 }
 
 pub fn liveBlockedReason(config: LiveConfig) []const u8 {
     if (config.allow_live and config.api_key.len == 0) return "missing_api_key";
     if (!config.allow_live) return "live_disabled";
     if (config.provider.len == 0) return "missing_provider";
-    return "none";
+    return "live_provider_out_of_v1_production_scope";
 }
 
 pub fn buildRequestJson(
@@ -347,4 +348,19 @@ test "live API is disabled by default and secrets redact" {
     try std.testing.expect(std.mem.indexOf(u8, redacted, api_key) == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, access_token) == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED]") != null);
+}
+
+test "live provider remains out of v1 production scope even with opt-in key" {
+    try std.testing.expect(!liveEnabled(.{
+        .allow_live = true,
+        .api_key = "sk-" ++ "ant-test-secret",
+    }));
+    try std.testing.expect(std.mem.eql(
+        u8,
+        liveBlockedReason(.{
+            .allow_live = true,
+            .api_key = "sk-" ++ "ant-test-secret",
+        }),
+        "live_provider_out_of_v1_production_scope",
+    ));
 }
